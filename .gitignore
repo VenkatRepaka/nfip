@@ -5,3 +5,5 @@ tables/
 *.egg-info/
 __pycache__/
 advice.md
+_sync
+DSC411_Final_Presentation_Description.pdf
