@@ -58,7 +58,7 @@ from sklearn.model_selection import GroupKFold
 from sklearn.metrics import mean_poisson_deviance
 
 sys.path.append('/Users/home/workspace/School/DataMining/nfip_claims')
-from nfip_project_utils import RAW_DIR, PROCESSED_DIR, TABLE_DIR, FIGURE_DIR, SEED
+from nfip_project_utils import RAW_DIR, PROCESSED_DIR, TABLE_DIR, FIGURE_DIR, SEED, show_answer_numbers
 
 warnings.filterwarnings('ignore')
 sns.set_style('whitegrid')
@@ -330,7 +330,7 @@ print(tracts[['max_3day_rain_mm', 'heavy_rain_days', 'coast_distance_km', 'nri_i
 # ---
 # # Section 4: Claims and Policies in Force by Tract
 #
-# **Claims.** All NFIP claims with a loss date in 2020-2025 in the contiguous U.S. (notebook 00, 276,064 claims). We use
+# **Claims.** All NFIP claims with a loss date in 2020-2025 in the contiguous U.S. (notebook 00, 276,119 claims). We use
 # every claim, **paid or not**, because the question is about *filing*.
 #
 # **Policies in force (PIF).** A policy is "in force" on a date if it started on or before that date, ends after it, and
@@ -525,13 +525,13 @@ for column in ['renter_tercile', 'old_housing_tercile']:
 # - **Claims per unit rise steeply with hazard** (about 1 per 1,000 units in band H1, 13-36 in H5). The hazard-only score
 #   works as intended.
 # - **Inside the highest hazard band, poorer tracts file far fewer claims:** 13.2 claims per 1,000 units in the lowest
-#   income quintile vs 36.1 in the highest. In bands H1-H4 the income pattern is flat.
+#   income quintile vs 36.2 in the highest. In bands H1-H4 the income pattern is flat.
 # - **Almost all of this is take-up.** In H5, 14.7% of housing units in the poorest tracts were insured in July 2020,
-#   against 44.9% in the richest. Claims **per policy** are about the same across incomes in H5 (8.1-10.3 per 100) and are
+#   against 44.9% in the richest. Claims **per policy** are about the same across incomes in H5 (8.2-10.3 per 100) and are
 #   even *higher* in poorer tracts in bands H2-H4.
-# - **Renters:** in H5, tracts with many renters file 11.7 claims per 1,000 units vs 38.1 with few renters; take-up is 21%
-#   vs 35%, and claims per policy are also lower (5.6 vs 10.9 per 100).
-# - **Older housing** files more claims per policy (in H5: 10.7 vs 7.0 per 100), with similar take-up.
+# - **Renters:** in H5, tracts with many renters file 12.1 claims per 1,000 units vs 38.3 with few renters; take-up is 21%
+#   vs 35%, and claims per policy are also lower (5.8 vs 10.9 per 100).
+# - **Older housing** files more claims per policy (in H5: 10.8 vs 7.0 per 100), with similar take-up.
 # - Caution: a hazard band is still wide. In H5, richer tracts may sit closer to the water than poorer ones. Section 7
 #   adds the hazard features and state effects directly.
 
@@ -660,7 +660,7 @@ print(comparison_with_hazard[['model', 'variable (+1 SD)', 'IRR', 'ci_low', 'ci_
 #   (0.86) and 22% fewer claims per policy (0.78). Renters can only buy contents cover, are not covered by the mortgage
 #   requirement, and a landlord's building policy is filed by the landlord.
 # - **Income: no gap in claims per unit after controls** (IRR 1.00, CI 0.88-1.13), but **two effects cancel**: richer
-#   tracts insure much more (take-up IRR 1.34 per SD) and file fewer claims per policy (0.83, not significant). Without the
+#   tracts insure much more (take-up IRR 1.34 per SD) and file fewer claims per policy (0.82, not significant). Without the
 #   hazard controls the income IRR is 1.15: part of the raw "richer areas claim more" pattern is because richer tracts sat
 #   in higher hazard (coast).
 # - **Older housing: more claims, not fewer** (IRR 1.28 per SD), driven by claims per policy (1.30) with the same take-up
@@ -774,14 +774,14 @@ print(lisa_profile.round(2).to_string())
 # %% [markdown]
 # **Reading the LISA map and profile.**
 # - The gap ratio is strongly clustered in space: **Moran's I = 0.45** (p = 0.005).
-# - **2,785 tracts (5.3 M housing units) are Low-Low protection-gap hotspots.** The hazard-only model expected about
+# - **2,786 tracts (5.3 M housing units) are Low-Low protection-gap hotspots.** The hazard-only model expected about
 #   50,000 claims there; only about 1,700 were filed (0.33 per 1,000 units). Take-up in July 2020 was 7.5%, against 25.6%
 #   in the High-High tracts.
 # - The hotspots are mostly **inland heavy-rain areas, not the coast:** metro Atlanta, the Carolinas Piedmont, Arkansas
 #   / Oklahoma, Chicago, Connecticut, and parts of Florida, Texas and California (atmospheric rivers). They had storm rain
 #   but sit far from mapped floodplains, which matches Nelson-Mercer et al.'s finding that much damage is pluvial and
 #   outside the SFHA.
-# - Surprise: the hotspots are **not poorer** (median income $73,750 vs $68,350 in High-High tracts). The spatial gap is
+# - Surprise: the hotspots are **not poorer** (median income $73,813 vs $68,297 in High-High tracts). The spatial gap is
 #   about **where** people believe they are safe (low take-up away from the coast), more than about income.
 
 # %%
@@ -839,21 +839,56 @@ json.dump(results_rq7, open(TABLE_DIR / '09_rq7_results.json', 'w'), indent=2, d
 
 # %% [markdown]
 # ---
+# ## The numbers behind the answer
+#
+# Read back from the saved tables (`tables/09_*`).
+
+# %%
+results_saved = json.load(open(TABLE_DIR / '09_rq7_results.json'))
+irr_saved = pd.read_csv(TABLE_DIR / '09_rq7_negative_binomial_irr.csv')
+sensitivity_saved = pd.read_csv(TABLE_DIR / '09_rq7_sensitivity.csv')
+tree_saved = pd.read_csv(TABLE_DIR / '09_rq7_tree_poisson_cv.csv').set_index('features')
+lisa_saved = pd.read_csv(TABLE_DIR / '09_rq7_lisa_profile.csv').set_index('lisa_cluster')
+takeup_saved = pd.read_csv(TABLE_DIR / '09_rq7_takeup_by_hazard_and_income.csv').set_index('hazard_band')
+claims_band_saved = pd.read_csv(TABLE_DIR / '09_rq7_claims_per_1000_by_hazard_and_income.csv').set_index('hazard_band')
+rows = [('exposed tracts', results_saved['exposed_tracts'], '09_rq7_results.json'),
+        ('exposed tracts: housing units (M) / claims / share of tracts with no claim',
+         f"{exposed['housing_units'].sum() / 1e6:.1f} / {exposed['claims_2020_2025'].sum():,.0f} / {(exposed['claims_2020_2025'] < 0.5).mean() * 100:.1f}%", 'this notebook')]
+for _, r in irr_saved.iterrows():
+    rows.append((f"IRR {r['model']}, {r['variable (+1 SD)']} [95% CI]", f"{r['IRR']:.2f} [{r['ci_low']:.2f}-{r['ci_high']:.2f}], {r['estimator']}", '09_rq7_negative_binomial_irr'))
+renter_a = sensitivity_saved[sensitivity_saved['model'] == '(a) claims per unit']['pct_renter']
+rows.append(('renter IRR (a) across the 3 exposure definitions', f'{renter_a.min():.2f}-{renter_a.max():.2f}', '09_rq7_sensitivity'))
+for features in tree_saved.index:
+    rows.append((f'tree (Poisson loss) deviance explained: {features} %', tree_saved.loc[features, 'deviance_explained_%'], '09_rq7_tree_poisson_cv'))
+top_band = takeup_saved.index[-1]
+rows += [(f'take-up % in {top_band}: Q1 lowest vs Q5 highest income', f"{takeup_saved.loc[top_band, 'Q1 lowest']} vs {takeup_saved.loc[top_band, 'Q5 highest']}", '09_rq7_takeup_by_hazard_and_income'),
+         (f'claims per 1,000 units in {top_band}: Q1 vs Q5', f"{claims_band_saved.loc[top_band, 'Q1 lowest']} vs {claims_band_saved.loc[top_band, 'Q5 highest']}", '09_rq7_claims_per_1000_by_hazard_and_income'),
+         ("Moran's I of observed/expected ratio (p)", f"{results_saved['moran_I']:.2f} ({results_saved['moran_p']:.3f})", '09_rq7_results.json')]
+for cluster in lisa_saved.index:
+    r = lisa_saved.loc[cluster]
+    rows.append((f'LISA {cluster[:40]}', f"{int(r['tracts']):,} tracts, {r['housing_units_M']} M units, observed {r['observed_claims']:,.0f} vs expected {r['expected_claims_hazard_only']:,.0f}, "
+                 f"take-up {r['take_up_2020_%']}%, top states {r['top_states']}", '09_rq7_lisa_profile'))
+answer_numbers = show_answer_numbers(rows, '09_rq7')
+
+# %% [markdown]
+# ---
 # # Research Question -> Answer
 #
 # > **RQ7. Do census tracts with lower income, more renters or older housing file fewer NFIP claims per housing unit
 # > exposed, even when storm and rain hazard was similar?**
 #
+# (Numbers from the `answer_numbers` table above.)
+#
 # **Data.** 17,476 exposed tracts (hurricane track within 100 km or >= 200 mm of rain in 3 days, 2020-2025) in 33 states,
-# 30.6 M housing units, 212,590 claims (78% of all claims). 43.9% of exposed tracts filed no claim at all.
+# 30.6 M housing units, 212,628 claims (78% of all claims). 43.9% of exposed tracts filed no claim at all.
 #
 # **Answer: yes for renters, no for income once hazard and state are controlled, and the opposite for older housing.
 # The gap is mostly a take-up gap.**
 #
 # | +1 SD in ... | (a) claims per unit | (b) take-up (PIF 2020 per unit) | (c) claims per policy |
 # |---|---|---|---|
-# | % renters (+24 pts) | **0.68** [0.62-0.75] | 0.86 [0.81-0.91] | 0.78 [0.66-0.92] |
-# | log income | 1.00 [0.88-1.13] | **1.34** [1.25-1.45] | 0.83 [0.65-1.05] |
+# | % renters (+24 pts) | **0.68** [0.62-0.75] | 0.86 [0.80-0.91] | 0.78 [0.65-0.92] |
+# | log income | 1.00 [0.88-1.13] | **1.34** [1.25-1.45] | 0.82 [0.65-1.05] |
 # | % built before 1980 (+28 pts) | **1.28** [1.14-1.43] | 1.02 [0.96-1.08] | 1.30 [1.10-1.55] |
 #
 # (Incidence rate ratios from negative binomial models (a, b) and a Poisson GLM (c) with all hazard features, state fixed
@@ -864,10 +899,10 @@ json.dump(results_rq7, open(TABLE_DIR / '09_rq7_results.json', 'w'), indent=2, d
 # 2. **Lower income does not reduce claims per unit after controls,** but only because two effects cancel: poorer tracts
 #    insure far less (in the highest hazard band, 14.7% of units insured in the poorest quintile vs 44.9% in the richest)
 #    while their policies claim at least as often. In the raw highest-hazard band the poorest tracts filed 13.2 claims per
-#    1,000 units vs 36.1 in the richest: the protection gap is real, but it is a **take-up gap**.
+#    1,000 units vs 36.2 in the richest: the protection gap is real, but it is a **take-up gap**.
 # 3. **Older housing files more claims** (pre-FIRM homes get damaged more often), not fewer.
 # 4. **Hazard explains about 40%** of the variation (tree model, county-grouped CV); neighbourhood features add about 1 point.
-# 5. **Where is the gap?** The observed/expected ratio is strongly clustered (Moran's I = 0.45). 2,785 Low-Low hotspot tracts
+# 5. **Where is the gap?** The observed/expected ratio is strongly clustered (Moran's I = 0.45). 2,786 Low-Low hotspot tracts
 #    (5.3 M units) filed about 1,700 claims where hazard predicted about 50,000; their take-up was 7.5%. They are mainly
 #    **inland heavy-rain areas** (Atlanta, the Carolinas, Arkansas/Oklahoma, Chicago, Connecticut) and are not poorer than
 #    the High-High tracts.

@@ -7,8 +7,22 @@
 #
 # ---
 #
-# > **RQ1. Can policy, building and external event information predict whether a claim receives a
-# > positive building payment (`amountPaidOnBuildingClaim > 0`)?**
+# **Initial question.** *Can policy, building and external event information predict whether a claim receives a
+# positive building payment (`amountPaidOnBuildingClaim > 0`)?*
+#
+# This first version has two weak points. Almost any model "predicts" a little, so the answer is always "partly".
+# And "not paid" mixes very different events ("not actual flood", "below deductible", admin closures, and claims that
+# are simply still open). Sections 1-14 study the course models on the initial question. Section 15 then answers a
+# sharper version:
+#
+# > **RQ1 (refined). Among closed NFIP claims, do flood-hazard facts known at filing time (PRISM rain, HURDAT2 storm,
+# > coast distance) improve the prediction of a claim closing without building payment, beyond building and policy
+# > facts alone? And which kinds of non-payment can be predicted?**
+#
+# - **H1.** Adding event data raises ROC-AUC, PR-AUC and the top-10% lift for "not paid". We accept H1 only if the
+#   95% confidence interval of the gain, from resampling **whole storms**, is above 0.
+# - **H2.** Non-payment caused by the flood itself ("not actual flood", "no demonstrable damage", "below
+#   deductible") is easier to predict than administrative closures.
 #
 # **Why it matters.** About one claim in five closes with no building payment. Each one still costs an
 # adjuster visit. If we could tell at filing time which claims will probably not pay, the program could
@@ -46,6 +60,8 @@ from sklearn.metrics import (roc_auc_score, average_precision_score, balanced_ac
                              confusion_matrix, roc_curve, precision_recall_curve, classification_report)
 import lightgbm as lgb
 import shap
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import brier_score_loss
 
 sys.path.append('/Users/home/workspace/School/DataMining/nfip_claims')
 from nfip_project_utils import *
@@ -428,12 +444,59 @@ cv_table.to_csv(TABLE_DIR / '03_rq1_event_grouped_cv.csv', index=False)
 print(cv_table.to_string(index=False))
 
 # %% [markdown]
+# ## 11.2 Which outside source makes the gain? Feature-block ablation
+#
+# SHAP (Section 13) shows which features the model *uses*. An **ablation** is stronger evidence: we remove one block
+# of outside features at a time from set B (rain, storm, or coast distance), retrain the same LightGBM, and see how much
+# the test score falls. A large fall means that block carries information the other features cannot replace.
+
+# %%
+ablation_sets = {
+    'A. NFIP only': NFIP_NUMERIC_FEATURES,
+    'B. NFIP + event (all blocks)': NFIP_NUMERIC_FEATURES + EVENT_FEATURES,
+    'B without rain (PRISM)': NFIP_NUMERIC_FEATURES + STORM_FEATURES + COAST_FEATURES,
+    'B without storm (HURDAT2)': NFIP_NUMERIC_FEATURES + RAIN_FEATURES + COAST_FEATURES,
+    'B without coast distance': NFIP_NUMERIC_FEATURES + RAIN_FEATURES + STORM_FEATURES,
+}
+ablation_rows = []
+for set_name, numeric in ablation_sets.items():
+    if set_name == 'A. NFIP only':
+        scores = progression_scores['A. NFIP only']
+    elif set_name == 'B. NFIP + event (all blocks)':
+        scores = progression_scores['B. NFIP + event (PRISM, HURDAT2, coast)']
+    else:
+        model = fit_lightgbm(train_claims, numeric, NFIP_CATEGORICAL_FEATURES)
+        scores = model.predict_proba(to_category_frame(test_claims, numeric, NFIP_CATEGORICAL_FEATURES))[:, 1]
+    ablation_rows.append({'feature_set': set_name, 'n_features': len(numeric) + len(NFIP_CATEGORICAL_FEATURES),
+                          'ROC_AUC': roc_auc_score(test_claims[TARGET], scores),
+                          'PR_AUC_not_paid': average_precision_score(1 - test_claims[TARGET], -scores)})
+ablation_table = pd.DataFrame(ablation_rows)
+full_B = ablation_table.loc[ablation_table['feature_set'] == 'B. NFIP + event (all blocks)'].iloc[0]
+ablation_table['ROC_change_vs_full_B'] = ablation_table['ROC_AUC'] - full_B['ROC_AUC']
+ablation_table['PR_change_vs_full_B'] = ablation_table['PR_AUC_not_paid'] - full_B['PR_AUC_not_paid']
+ablation_table = ablation_table.round(4)
+ablation_table.to_csv(TABLE_DIR / '03_rq1_ablation.csv', index=False)
+print(ablation_table.to_string(index=False))
+
+# %% [markdown]
+# **Reading the ablation.** Full set B reaches ROC-AUC 0.787, NFIP-only 0.731. Removing the **storm** block (HURDAT2)
+# costs the most ROC-AUC (-0.041), removing **rain** (PRISM) costs the most PR-AUC for "not paid" (-0.048, against
+# -0.032 for storm). Removing coast distance costs almost nothing (-0.005), because latitude, longitude and the flood
+# zone already say where the coast is. So **both rain and storm data carry their own information**: storm data helps
+# rank claims across storms, and rain helps most to find the unpaid claims (little rain = often no real flood damage).
+
+# %% [markdown]
 # ---
 # # Section 12: Moving the Threshold (Lecture 07, Section 8)
 #
 # A probability is not a decision. Suppose the program wants to send "probably not paid" claims to a
 # desk review, but must not send more than a small share of claims that would in fact be paid.
 # We choose the threshold on **2023** (a validation year), then apply it to 2024-2025.
+#
+# One detail, to be exact: the threshold is chosen with a **separate model trained on 2020-2022** and scored on 2023
+# (so 2023 is truly unseen). On the test years we then apply this threshold to the **main model trained on 2020-2023**
+# (Section 11). The two models differ only by one year of training data, so the threshold transfers well in practice,
+# but strictly it was tuned on a slightly different model.
 
 # %%
 numeric_C, categorical_C = FEATURE_SETS['C. NFIP + event + context (ACS, NRI)']
@@ -482,6 +545,57 @@ plt.savefig(FIGURE_DIR / '03_rq1_confusion_roc_pr.png', dpi=120)
 plt.show()
 print(classification_report(test_claims[TARGET], final_predictions, target_names=['not paid', 'paid'], digits=3))
 
+operating_point = pd.DataFrame([{
+    'threshold_chosen_on_2023': best_threshold,
+    'recall_not_paid': ((final_predictions == 0) & (test_claims[TARGET] == 0)).sum() / (test_claims[TARGET] == 0).sum(),
+    'precision_not_paid': ((final_predictions == 0) & (test_claims[TARGET] == 0)).sum() / max(1, (final_predictions == 0).sum()),
+    'balanced_accuracy': balanced_accuracy_score(test_claims[TARGET], final_predictions),
+    'not_paid_base_rate': 1 - test_claims[TARGET].mean()}]).round(4)
+operating_point.to_csv(TABLE_DIR / '03_rq1_operating_point.csv', index=False)
+print(operating_point.to_string(index=False))
+
+# %% [markdown]
+# ## 12.1 Can we trust the probabilities? Calibration and the Brier score
+#
+# ROC-AUC only checks the **ranking**. A triage tool also needs probabilities that mean what they say: of all claims
+# that get "70% paid", about 70% should really be paid. A **reliability curve** puts claims into 10 bins by predicted
+# probability and plots the mean prediction against the observed paid rate (a perfect model lies on the diagonal).
+# The **Brier score** is the mean squared error of the probability (lower is better). As a reference we also give the
+# Brier score of a model that always predicts the training-years paid rate.
+
+# %%
+calibration_rows = []
+fig, ax = plt.subplots(figsize=(7, 6))
+training_paid_rate = train_claims[TARGET].mean()
+for set_name, scores in progression_scores.items():
+    observed_rate, mean_predicted = calibration_curve(test_claims[TARGET], scores, n_bins=10, strategy='quantile')
+    ax.plot(mean_predicted, observed_rate, 'o-', label=set_name[:32])
+    calibration_rows.append({'feature_set': set_name, 'brier_score': brier_score_loss(test_claims[TARGET], scores),
+                             'brier_constant_train_rate': brier_score_loss(test_claims[TARGET], np.full(len(scores), training_paid_rate)),
+                             'mean_predicted_paid': scores.mean(), 'observed_paid_rate': test_claims[TARGET].mean(),
+                             'largest_bin_gap': np.abs(observed_rate - mean_predicted).max()})
+ax.plot([0, 1], [0, 1], 'k--', lw=1, label='perfect calibration')
+ax.set_xlabel('mean predicted probability of being paid (bin)')
+ax.set_ylabel('observed paid rate (bin)')
+ax.set_title('RQ1 reliability curve, LightGBM, test 2024-2025')
+ax.legend(fontsize=8)
+plt.tight_layout()
+plt.savefig(FIGURE_DIR / '03_rq1_calibration.png', dpi=120)
+plt.show()
+calibration_table = pd.DataFrame(calibration_rows).round(4)
+calibration_table.to_csv(TABLE_DIR / '03_rq1_calibration.csv', index=False)
+print(calibration_table.to_string(index=False))
+
+# %% [markdown]
+# **Reading the calibration.** All three models **under-predict** payment on 2024-2025: the mean predicted paid
+# probability is 0.74 (A), 0.80 (B) and 0.80 (C), but 86.8% of the test claims were paid. The test years were more
+# often paid than the training years (Helene rained on almost everyone), and a model cannot know this in advance.
+# With event data (B) the Brier score is 0.099, clearly better than the constant-rate reference (0.118). The NFIP-only
+# model (0.125) is even *worse* than the constant, because its probabilities are too low by more than 0.25 in some
+# bins. So: the **ranking** of B and C is useful, but the probabilities should be **re-calibrated** on the most
+# recent season before anyone reads them as "x% chance of payment". This is also why the threshold in Section 12 is
+# chosen on a separate year.
+
 # %% [markdown]
 # ---
 # # Section 13: Which Features Drive the Prediction? (SHAP)
@@ -526,38 +640,394 @@ print(error_by_event.round(3).to_string())
 # %%
 results_rq1 = {'progression': progression_table.to_dict('records'), 'event_grouped_cv': cv_table.to_dict('records'),
                'threshold': best_threshold, 'model_comparison': comparison_table.to_dict('records')}
+
+# %% [markdown]
+# ---
+# # Section 15: A Sharper RQ1: Closed Claims, Uncertainty by Storm, and Kinds of Non-Payment
+#
+# Sections 1-14 answered the initial question. Here we answer the **refined RQ1** (top of the notebook) in three steps:
+#
+# 1. **Split "not paid" by its reason.** `nonPaymentReasonBuilding` is a leaking column, so it is **never a feature**.
+#    We use it only *after* the model is trained, to understand the errors.
+# 2. **Remove claims that are probably still open**, then compare NFIP-only (A) with NFIP + event (B), and put a
+#    confidence interval on the gain by resampling whole storms.
+# 3. **Score each kind of non-payment separately** (H2).
+#
+# ## 15.1 What does "not paid" contain?
+#
+# The FEMA data dictionary gives each reason code a meaning. We group the codes:
+#
+# | Group | Codes | Meaning |
+# |---|---|---|
+# | `no_flood_damage` | 06, 20 | "not actual flood", "no demonstrable damage" |
+# | `below_deductible` | 01 | the damage was smaller than the deductible |
+# | `other_or_admin` | 97, 08 | "other", "failure to pursue claim" |
+# | `excluded_peril` | all other codes | seepage, sewer backup, wind, erosion, ... (not covered by flood insurance) |
+# | `blank_reason` | (empty) | no payment **and** no reason: most likely the claim is **still open** |
+
+# %%
+REASON_GROUPS = {'06': 'no_flood_damage', '20': 'no_flood_damage', '01': 'below_deductible',
+                 '97': 'other_or_admin', '08': 'other_or_admin'}
+
+
+def add_reason_group(data):
+    reason = data['nonPaymentReasonBuilding']
+    return np.where(data[TARGET] == 1, 'paid',
+                    np.where(reason.isna(), 'blank_reason', reason.map(REASON_GROUPS).fillna('excluded_peril')))
+
+
+claims['reason_group'] = add_reason_group(claims)
+test_claims['reason_group'] = add_reason_group(test_claims)
+unpaid_claims = claims[claims[TARGET] == 0]
+reason_share_by_year = (pd.crosstab(unpaid_claims['loss_year'], unpaid_claims['reason_group'], normalize='index') * 100).round(1)
+reason_share_by_year.to_csv(TABLE_DIR / '03_rq1_reason_share_by_year.csv')
+print('Share of UNPAID claims by reason group, per loss year (%):')
+print(reason_share_by_year.to_string())
+
+# %% [markdown]
+# **Reading the table.** In 2020-2023 only 2-10% of unpaid claims have no reason. In the test years this share
+# jumps (2024 and especially 2025). A claim closed without payment always gets a reason, so these are most likely
+# claims that were **still open** when FEMA exported the file. For them, "not paid" is not yet true. They add noise
+# to the target exactly in the test years, so the refined question uses **closed claims only**.
+
+# %% [markdown]
+# ## 15.2 H1: does event data help, and how sure are we?
+#
+# We reuse the LightGBM scores from Section 11 (same models, same 2020-2023 training). The score here is the
+# probability of **not** being paid.
+#
+# **Event-block bootstrap.** Claims from one storm are not independent: if the model does well on Helene, it does
+# well on thousands of Helene claims at once. So we do not resample single claims. We resample **whole events**
+# (with replacement), recompute the metrics for A and B, and keep the difference B - A. After 500 repeats, the 2.5th
+# and 97.5th percentiles of the differences give a 95% confidence interval.
+
+# %%
+test_claims['not_paid'] = 1 - test_claims[TARGET]
+test_claims['score_not_paid_A'] = 1 - progression_scores['A. NFIP only']
+test_claims['score_not_paid_B'] = 1 - progression_scores['B. NFIP + event (PRISM, HURDAT2, coast)']
+closed_test_claims = test_claims[test_claims['reason_group'] != 'blank_reason'].reset_index(drop=True)
+
+
+def not_paid_metrics(data, score_column):
+    return {'ROC_AUC': roc_auc_score(data['not_paid'], data[score_column]),
+            'PR_AUC': average_precision_score(data['not_paid'], data[score_column]),
+            'lift_top10%': lift_at_top(data['not_paid'].values, data[score_column].values, 0.10)}
+
+
+h1_rows = []
+for version, data in [('all test claims', test_claims), ('closed claims only', closed_test_claims)]:
+    for model_name, column in [('A. NFIP only', 'score_not_paid_A'), ('B. NFIP + event', 'score_not_paid_B')]:
+        h1_rows.append({'test_set': version, 'claims': len(data), 'not_paid_rate': data['not_paid'].mean(),
+                        'model': model_name, **not_paid_metrics(data, column)})
+h1_table = pd.DataFrame(h1_rows).round(3)
+h1_table.to_csv(TABLE_DIR / '03_rq1_refined_closed_claims.csv', index=False)
+print(h1_table.to_string(index=False))
+
+# %%
+event_rows = closed_test_claims.groupby('event_group').indices
+event_names = list(event_rows)
+bootstrap_rng = np.random.default_rng(SEED)
+bootstrap_differences = []
+for repeat in range(500):
+    chosen_events = bootstrap_rng.choice(len(event_names), len(event_names), replace=True)
+    resampled = closed_test_claims.iloc[np.concatenate([event_rows[event_names[i]] for i in chosen_events])]
+    if resampled['not_paid'].nunique() < 2:
+        continue
+    metrics_A = not_paid_metrics(resampled, 'score_not_paid_A')
+    metrics_B = not_paid_metrics(resampled, 'score_not_paid_B')
+    bootstrap_differences.append({name: metrics_B[name] - metrics_A[name] for name in metrics_A})
+bootstrap_differences = pd.DataFrame(bootstrap_differences)
+
+point_A = not_paid_metrics(closed_test_claims, 'score_not_paid_A')
+point_B = not_paid_metrics(closed_test_claims, 'score_not_paid_B')
+bootstrap_table = pd.DataFrame([{
+    'metric': name, 'NFIP_only_A': point_A[name], 'NFIP_plus_event_B': point_B[name],
+    'gain_B_minus_A': point_B[name] - point_A[name],
+    'ci_95_low': bootstrap_differences[name].quantile(0.025), 'ci_95_high': bootstrap_differences[name].quantile(0.975),
+    'share_of_repeats_with_gain_%': (bootstrap_differences[name] > 0).mean() * 100} for name in point_A]).round(3)
+bootstrap_table.to_csv(TABLE_DIR / '03_rq1_refined_bootstrap.csv', index=False)
+print(f'Closed test claims: {len(closed_test_claims):,}, events resampled: {len(event_names)}, '
+      f'valid repeats: {len(bootstrap_differences)}')
+print(bootstrap_table.to_string(index=False))
+
+# %%
+fig, axes = plt.subplots(1, 3, figsize=(17, 4))
+for ax, name in zip(axes, ['ROC_AUC', 'PR_AUC', 'lift_top10%']):
+    ax.hist(bootstrap_differences[name], bins=40, color='#0070C0', alpha=0.75)
+    ax.axvline(0, color='k', lw=1)
+    for edge in bootstrap_table.loc[bootstrap_table['metric'] == name, ['ci_95_low', 'ci_95_high']].values[0]:
+        ax.axvline(edge, color='#C00000', ls='--', lw=1)
+    ax.set_title(f'Gain from event data: {name}')
+    ax.set_xlabel('B - A (one bar = many bootstrap repeats)')
+plt.suptitle('Event-block bootstrap, closed 2024-2025 claims (red dashed = 95% CI)', y=1.03)
+plt.tight_layout()
+plt.savefig(FIGURE_DIR / '03_rq1_refined_bootstrap.png', dpi=120, bbox_inches='tight')
+plt.show()
+
+# %% [markdown]
+# **Sensitivity: without Hurricane Helene.** About half of the test claims come from one storm (Helene). Is the gain
+# only a Helene effect? We repeat the closed-claims comparison and the event-block bootstrap **without Helene**, using
+# the helper `event_block_bootstrap` from `nfip_project_utils.py`. The rows are added to the two tables above.
+
+# %%
+no_helene_claims = closed_test_claims[closed_test_claims['event_group'] != 'Hurricane Helene'].reset_index(drop=True)
+not_paid_metric_functions = {'ROC_AUC': roc_auc_score, 'PR_AUC': average_precision_score,
+                             'lift_top10%': lambda y, s: lift_at_top(y, s, 0.10)}
+no_helene_bootstrap = event_block_bootstrap(no_helene_claims, 'not_paid',
+                                            {'A': 'score_not_paid_A', 'B': 'score_not_paid_B'},
+                                            not_paid_metric_functions, baseline='A', n_repeats=500)
+for model_name, column in [('A. NFIP only', 'score_not_paid_A'), ('B. NFIP + event', 'score_not_paid_B')]:
+    h1_rows.append({'test_set': 'closed claims, without Helene', 'claims': len(no_helene_claims),
+                    'not_paid_rate': no_helene_claims['not_paid'].mean(), 'model': model_name,
+                    **not_paid_metrics(no_helene_claims, column)})
+h1_table = pd.DataFrame(h1_rows).round(3)
+h1_table.to_csv(TABLE_DIR / '03_rq1_refined_closed_claims.csv', index=False)
+
+no_helene_rows = []
+for metric in not_paid_metric_functions:
+    a_row = no_helene_bootstrap[(no_helene_bootstrap['metric'] == metric) & (no_helene_bootstrap['model'] == 'A')].iloc[0]
+    b_row = no_helene_bootstrap[(no_helene_bootstrap['metric'] == metric) & (no_helene_bootstrap['model'] == 'B')].iloc[0]
+    no_helene_rows.append({'metric': metric, 'NFIP_only_A': a_row['value'], 'NFIP_plus_event_B': b_row['value'],
+                           'gain_B_minus_A': b_row['gain_vs_baseline'], 'ci_95_low': b_row['ci_95_low'],
+                           'ci_95_high': b_row['ci_95_high'], 'share_of_repeats_with_gain_%': b_row['share_of_repeats_with_gain_%'],
+                           'test_set': 'closed claims, without Helene'})
+bootstrap_table['test_set'] = bootstrap_table.get('test_set', 'closed claims')
+bootstrap_table = pd.concat([bootstrap_table[bootstrap_table['test_set'] == 'closed claims'],
+                             pd.DataFrame(no_helene_rows)], ignore_index=True).round(3)
+bootstrap_table.to_csv(TABLE_DIR / '03_rq1_refined_bootstrap.csv', index=False)
+print(f'Closed test claims without Helene: {len(no_helene_claims):,} in {no_helene_claims["event_group"].nunique()} event groups')
+print(h1_table.to_string(index=False))
+print()
+print(bootstrap_table.to_string(index=False))
+
+# %% [markdown]
+# **Reading the Helene check.** Without Helene, 49,786 closed claims in 25 event groups remain. Both models are weaker
+# there (NFIP-only ROC-AUC 0.64, with event data 0.73), but the **gain from event data is larger**: +0.089 ROC-AUC
+# [95% CI +0.045, +0.148] and +0.111 PR-AUC [+0.047, +0.185]. So the main result is not a Helene effect.
+
+# %% [markdown]
+# ## 15.3 H2: which kind of non-payment can be predicted?
+#
+# For each reason group we compute the ROC-AUC of **that group against paid claims** (other unpaid claims are left
+# out). We also ask: of all claims in the group, what share lands in the **top 10% of scores** of model B? For paid
+# claims this share should be small.
+
+# %%
+paid_test_claims = test_claims[test_claims['reason_group'] == 'paid']
+top_10_percent_cut = np.quantile(test_claims['score_not_paid_B'], 0.90)
+reason_rows = []
+for group in ['below_deductible', 'no_flood_damage', 'other_or_admin', 'excluded_peril', 'blank_reason', 'paid']:
+    group_claims = test_claims[test_claims['reason_group'] == group]
+    row = {'reason_group': group, 'claims': len(group_claims),
+           'share_in_top10%_B': (group_claims['score_not_paid_B'] >= top_10_percent_cut).mean(),
+           'median_rain_3day_mm': group_claims['rain_3day_mm'].median()}
+    if group != 'paid':
+        versus_paid = pd.concat([group_claims, paid_test_claims])
+        row['ROC_AUC_A'] = roc_auc_score(versus_paid['not_paid'], versus_paid['score_not_paid_A'])
+        row['ROC_AUC_B'] = roc_auc_score(versus_paid['not_paid'], versus_paid['score_not_paid_B'])
+        row['gain_B_minus_A'] = row['ROC_AUC_B'] - row['ROC_AUC_A']
+    reason_rows.append(row)
+reason_table = pd.DataFrame(reason_rows).round(3)
+reason_table.to_csv(TABLE_DIR / '03_rq1_refined_by_reason.csv', index=False)
+print(reason_table.to_string(index=False))
+
+# %% [markdown]
+# ## 15.4 A check: is the rain pattern the same in training and test years?
+#
+# Section 3.1 found that unpaid claims usually had **little** rain. If that pattern changed in 2024-2025, the model
+# must be relying on other features there. We compare the median 3-day rain by reason group and period.
+
+# %%
+claims['period'] = np.where(claims['loss_year'].isin(TRAIN_YEARS), 'train 2020-2023', 'test 2024-2025')
+rain_by_reason = claims.pivot_table(index='reason_group', columns='period', values='rain_3day_mm', aggfunc='median').round(1)
+print('Median 3-day rain (mm) by reason group and period:')
+print(rain_by_reason.to_string())
+helene_share = (test_claims['event_group'] == 'Hurricane Helene').mean() * 100
+print(f'\nShare of 2024-2025 test claims from Hurricane Helene: {helene_share:.1f}%')
+rain_by_reason.to_csv(TABLE_DIR / '03_rq1_rain_by_reason_period.csv')
+
+# Paid rate for claims with little rain (< 40 mm in 3 days) and the rest, in each period
+claims['rain_band'] = np.where(claims['rain_3day_mm'] < 40, 'little rain (< 40 mm)', 'more rain (>= 40 mm)')
+paid_by_rain_band = claims.pivot_table(index='rain_band', columns='period', values=TARGET, aggfunc='mean').round(3)
+claims_by_rain_band = claims.pivot_table(index='rain_band', columns='period', values=TARGET, aggfunc='size')
+print('\nPaid rate by rain band and period:')
+print(paid_by_rain_band.to_string())
+print('\nNumber of claims by rain band and period:')
+print(claims_by_rain_band.to_string())
+paid_by_rain_band.to_csv(TABLE_DIR / '03_rq1_paid_by_rain_band.csv')
+
+# %% [markdown]
+# **Reading the rain check: the pattern reverses in the test years.** In 2020-2023 paid claims had **more** rain than
+# unpaid ones (median 159 mm against 141-148 mm for every non-payment group). In 2024-2025 the order **reverses**: paid
+# claims had a median of only 63 mm, while "no flood damage" claims had 81 mm, excluded perils 77 mm and "below
+# deductible" 72 mm. The reason is Hurricane Helene: 51.5% of the test claims come from Helene, which brought heavy
+# rain to almost everyone in its path, so the median no longer separates paid and unpaid claims.
+#
+# The signal did not disappear; it moved to the **low-rain tail**. Claims with little rain (< 40 mm in 3 days) are paid
+# 60% of the time in training and 68% in testing, against 83% and 88% for the other claims. Tree-based models use
+# exactly this kind of threshold, not the median, which is why event data still helps in the test years (Section 15.2).
+
+# %%
+results_rq1['refined'] = {'reason_share_by_year': reason_share_by_year.reset_index().to_dict('records'),
+                          'closed_claims': h1_table.to_dict('records'), 'bootstrap': bootstrap_table.to_dict('records'),
+                          'by_reason': reason_table.to_dict('records')}
 json.dump(results_rq1, open(TABLE_DIR / '03_rq1_results.json', 'w'), indent=2, default=float)
+
+# %% [markdown]
+# ---
+# ## The numbers behind the answer
+#
+# The cell below reads the key numbers back from the saved tables (`tables/03_*.csv`). The answer text uses these
+# numbers, rounded. If the data changes, rerun the notebook and compare the text with this table.
+
+# %%
+progression_saved = pd.read_csv(TABLE_DIR / '03_rq1_progression.csv').set_index('feature_set')
+cv_saved = pd.read_csv(TABLE_DIR / '03_rq1_event_grouped_cv.csv').set_index('feature_set')
+models_saved = pd.read_csv(TABLE_DIR / '03_rq1_model_comparison.csv').set_index('model')
+closed_saved = pd.read_csv(TABLE_DIR / '03_rq1_refined_closed_claims.csv')
+bootstrap_saved = pd.read_csv(TABLE_DIR / '03_rq1_refined_bootstrap.csv')
+reasons_saved = pd.read_csv(TABLE_DIR / '03_rq1_refined_by_reason.csv').set_index('reason_group')
+reason_share_saved = pd.read_csv(TABLE_DIR / '03_rq1_reason_share_by_year.csv').set_index('loss_year')
+ablation_saved = pd.read_csv(TABLE_DIR / '03_rq1_ablation.csv').set_index('feature_set')
+calibration_saved = pd.read_csv(TABLE_DIR / '03_rq1_calibration.csv').set_index('feature_set')
+operating_saved = pd.read_csv(TABLE_DIR / '03_rq1_operating_point.csv').iloc[0]
+rain_saved = pd.read_csv(TABLE_DIR / '03_rq1_rain_by_reason_period.csv').set_index('reason_group')
+shap_saved = pd.read_csv(TABLE_DIR / '03_rq1_shap_importance.csv', index_col=0).iloc[:, 0]
+shap_source = shap_saved.groupby(lambda c: 'NFIP' if c in NFIP_NUMERIC_FEATURES + NFIP_CATEGORICAL_FEATURES
+                                 else 'event' if c in EVENT_FEATURES else 'context').sum()
+shap_source = shap_source / shap_source.sum() * 100
+set_A, set_B, set_C = progression_saved.index[0], progression_saved.index[1], progression_saved.index[2]
+
+
+def boot(metric, test_set='closed claims'):
+    return bootstrap_saved[(bootstrap_saved['metric'] == metric) & (bootstrap_saved['test_set'] == test_set)].iloc[0]
+
+
+def closed(test_set, model):
+    return closed_saved[(closed_saved['test_set'] == test_set) & (closed_saved['model'] == model)].iloc[0]
+
+
+rows = [
+    ('test claims 2024-2025 (all)', int(closed('all test claims', 'A. NFIP only')['claims']), '03_rq1_refined_closed_claims'),
+    ('not-paid rate, all test claims', closed('all test claims', 'A. NFIP only')['not_paid_rate'], '03_rq1_refined_closed_claims'),
+    ('closed test claims', int(closed('closed claims only', 'A. NFIP only')['claims']), '03_rq1_refined_closed_claims'),
+    ('not-paid rate, closed claims', closed('closed claims only', 'A. NFIP only')['not_paid_rate'], '03_rq1_refined_closed_claims'),
+    ('unpaid with blank reason, % of unpaid, 2024', reason_share_saved.loc[2024, 'blank_reason'], '03_rq1_reason_share_by_year'),
+    ('unpaid with blank reason, % of unpaid, 2025', reason_share_saved.loc[2025, 'blank_reason'], '03_rq1_reason_share_by_year'),
+    ('unpaid with blank reason, % of unpaid, max 2020-2023', reason_share_saved.loc[2020:2023, 'blank_reason'].max(), '03_rq1_reason_share_by_year'),
+    ('ROC-AUC all test claims A / B', f"{closed('all test claims', 'A. NFIP only')['ROC_AUC']:.3f} / {closed('all test claims', 'B. NFIP + event')['ROC_AUC']:.3f}", '03_rq1_refined_closed_claims'),
+]
+for metric in ['ROC_AUC', 'PR_AUC', 'lift_top10%']:
+    for test_set in ['closed claims', 'closed claims, without Helene']:
+        b = boot(metric, test_set)
+        rows.append((f'{metric} {test_set}: A -> B, gain [95% CI]',
+                     f"{b['NFIP_only_A']:.3f} -> {b['NFIP_plus_event_B']:.3f}, {b['gain_B_minus_A']:+.3f} [{b['ci_95_low']:+.3f}, {b['ci_95_high']:+.3f}], "
+                     f"gain in {b['share_of_repeats_with_gain_%']:.0f}% of repeats", '03_rq1_refined_bootstrap'))
+rows.append(('closed claims without Helene', int(closed('closed claims, without Helene', 'A. NFIP only')['claims']), '03_rq1_refined_closed_claims'))
+for group in ['below_deductible', 'no_flood_damage', 'other_or_admin', 'excluded_peril', 'blank_reason', 'paid']:
+    r = reasons_saved.loc[group]
+    text = f"claims {int(r['claims']):,}, top-10% share {r['share_in_top10%_B'] * 100:.1f}%"
+    if group != 'paid':
+        text += f", ROC A -> B {r['ROC_AUC_A']:.3f} -> {r['ROC_AUC_B']:.3f}"
+    rows.append((f'reason group {group}', text, '03_rq1_refined_by_reason'))
+for name, set_name in [('A', set_A), ('B', set_B), ('C', set_C)]:
+    rows.append((f'LightGBM time split {name}: ROC / PR-AUC not paid',
+                 f"{progression_saved.loc[set_name, 'LightGBM_ROC_AUC']:.3f} / {progression_saved.loc[set_name, 'LightGBM_PR_AUC_not_paid']:.3f}", '03_rq1_progression'))
+for set_name in cv_saved.index:
+    rows.append((f'event-grouped CV ROC {set_name[:2]}', f"{cv_saved.loc[set_name, 'mean_ROC_AUC']:.3f} +/- {cv_saved.loc[set_name, 'std']:.3f}", '03_rq1_event_grouped_cv'))
+rows.append(('course models ROC-AUC', ', '.join(f'{m}: {v:.3f}' for m, v in models_saved['ROC_AUC'].items()), '03_rq1_model_comparison'))
+for set_name in ablation_saved.index[2:]:
+    rows.append((f'ablation: {set_name}, ROC / PR change vs full B',
+                 f"{ablation_saved.loc[set_name, 'ROC_change_vs_full_B']:+.3f} / {ablation_saved.loc[set_name, 'PR_change_vs_full_B']:+.3f}", '03_rq1_ablation'))
+for set_name in calibration_saved.index:
+    rows.append((f'Brier score {set_name[:2]} (constant-rate reference)',
+                 f"{calibration_saved.loc[set_name, 'brier_score']:.4f} ({calibration_saved.loc[set_name, 'brier_constant_train_rate']:.4f}), largest bin gap {calibration_saved.loc[set_name, 'largest_bin_gap']:.3f}",
+                 '03_rq1_calibration'))
+rows += [
+    ('threshold chosen on 2023', operating_saved['threshold_chosen_on_2023'], '03_rq1_operating_point'),
+    ('recall / precision not paid at that threshold', f"{operating_saved['recall_not_paid']:.3f} / {operating_saved['precision_not_paid']:.3f}", '03_rq1_operating_point'),
+    ('balanced accuracy at that threshold', operating_saved['balanced_accuracy'], '03_rq1_operating_point'),
+    ('SHAP share NFIP / event / context %', f"{shap_source.get('NFIP', 0):.0f} / {shap_source.get('event', 0):.0f} / {shap_source.get('context', 0):.0f}", '03_rq1_shap_importance'),
+    ('top 5 SHAP features', ', '.join(shap_saved.index[:5]), '03_rq1_shap_importance'),
+    ('median 3-day rain train: paid / no_flood_damage', f"{rain_saved.loc['paid', 'train 2020-2023']} / {rain_saved.loc['no_flood_damage', 'train 2020-2023']}", '03_rq1_rain_by_reason_period'),
+    ('median 3-day rain test: paid / no_flood_damage', f"{rain_saved.loc['paid', 'test 2024-2025']} / {rain_saved.loc['no_flood_damage', 'test 2024-2025']}", '03_rq1_rain_by_reason_period'),
+]
+answer_numbers = show_answer_numbers(rows, '03_rq1')
 
 # %% [markdown]
 # ---
 # # Research Question -> Answer
 #
-# > **RQ1. Can policy, building and external event information predict positive building payments?**
+# > **RQ1 (refined). Among closed NFIP claims, do flood-hazard facts known at filing time (PRISM rain, HURDAT2 storm,
+# > coast distance) improve the prediction of a claim closing without building payment, beyond building and policy
+# > facts alone? And which kinds of non-payment can be predicted?**
 #
-# **Answer: partly. The model ranks claims usefully, and the external event data is what makes it work.**
-# (All numbers are on 2024-2025 claims, 105,137 claims, which the model never saw. 13.1% were not paid.)
+# **Answer: yes. Event data gives a clear gain, and the gain holds when whole storms are resampled and when Hurricane
+# Helene is removed. The model is a useful triage tool, not a payment decision.** (All numbers below come from the
+# `answer_numbers` table printed above.)
+#
+# **H1 (event data helps): supported.** Closed 2024-2025 claims (103,530; 11.5% not paid), LightGBM:
+#
+# | Metric | NFIP only (A) | + event data (B) | Gain B - A [95% CI, event-block bootstrap] |
+# |---|---|---|---|
+# | ROC-AUC | 0.737 | **0.793** | +0.056 [+0.024, +0.129] |
+# | PR-AUC "not paid" (random = 0.115) | 0.352 | **0.427** | +0.075 [+0.025, +0.165] |
+# | Lift in the top 10% | 3.18 | **3.90** | +0.72 [+0.24, +1.53] |
+#
+# All three intervals are above 0, and the gain was positive in (almost) 100% of the 500 repeats. The intervals are
+# wide, because the test years hold only 26 event groups.
+#
+# **Sensitivity without Hurricane Helene** (49,786 closed claims, 25 event groups): ROC-AUC 0.641 -> 0.730, gain
+# +0.089 [+0.045, +0.148]; PR-AUC 0.285 -> 0.396, gain +0.111 [+0.047, +0.185]. The gain is even larger outside Helene.
+#
+# **Which outside source?** (ablation, Section 11.2) Removing storm data costs the most ROC-AUC (-0.041), removing rain
+# costs the most PR-AUC for "not paid" (-0.048); coast distance adds almost nothing (-0.005) beyond lat/lon and zone.
+#
+# **H2 (flood-driven non-payment is easier to predict): only weakly supported.** Each reason group vs paid claims:
+#
+# | Reason group | Claims | ROC-AUC A -> B | Share in top 10% of scores (B) |
+# |---|---|---|---|
+# | below deductible | 3,597 | 0.758 -> **0.804** | 37.5% |
+# | no flood damage ("not actual flood", "no demonstrable damage") | 5,057 | 0.721 -> **0.792** | 34.4% |
+# | other / admin | 3,134 | 0.738 -> 0.782 | 44.5% |
+# | excluded peril | 146 | 0.710 -> 0.787 | 27.4% |
+# | (paid claims) | 91,596 | - | 5.8% |
+#
+# "Below deductible" and "no flood damage" are the easiest to predict and gain the most from event data (+0.05 and
+# +0.07). But admin closures are almost as predictable, and they take the largest share of the top 10%. So the model is
+# not only reading "how much did it rain": building and policy facts (deductible, building age, elevation) push every
+# kind of non-payment up.
+#
+# **Supporting evidence from Sections 1-14** (all 105,482 test claims, initial question):
 #
 # | Evidence | NFIP only (A) | + event data (B) | + ACS/NRI context (C) |
 # |---|---|---|---|
-# | LightGBM ROC-AUC, time split | 0.715 | **0.786** | 0.772 |
-# | LightGBM PR-AUC "not paid" (random = 0.131) | 0.356 | **0.434** | 0.430 |
-# | Event-grouped 5-fold CV ROC-AUC | 0.675 +/- 0.047 | - | 0.728 +/- 0.016 |
+# | LightGBM ROC-AUC, time split | 0.731 | **0.787** | 0.782 |
+# | LightGBM PR-AUC "not paid" (random = 0.132) | 0.371 | **0.449** | 0.444 |
+# | Event-grouped 5-fold CV ROC-AUC (2020-2023) | 0.671 +/- 0.048 | - | 0.728 +/- 0.019 |
 #
-# - **NFIP facts alone are weak** (ROC 0.715, and only 0.675 when whole storms are held out).
-# - **PRISM rain, HURDAT2 storm and coast distance give the jump** (+0.07 ROC, PR-AUC from 0.36 to 0.43).
-#   The first split of every tree is 3-day rain: claims with less than about 40-50 mm of rain are
-#   paid only 52-60% of the time, against 81-83% above it.
-# - **ACS/NRI context does not help on the time split** (0.772 vs 0.786). It helps the event-grouped CV
-#   and makes it more stable, but neighbourhood values partly act as location IDs (notebook 02).
-# - **Course models:** tree 0.665, naive Bayes 0.640, k-NN 0.705, logistic 0.696, SVM 0.715, MLP 0.761,
-#   LightGBM 0.773 (all on set C). The MLP comes close to LightGBM but does not beat it (Lecture 14).
-# - **Operating point:** a threshold of 0.65 chosen on 2023 gives, on 2024-2025, recall 0.47 and precision
-#   0.40 for "not paid" (3x the base rate), and balanced accuracy 0.68.
-# - **SHAP:** 61.5% NFIP, 20.3% event, 18.2% context. Top drivers: deductible, building age, elevation
-#   difference, 3-day rain, state.
-# - **Per event:** ROC 0.81 on Helene, but 0.67-0.74 on most other events. Each storm behaves differently.
-# - **Why not higher:** 44% of the SVM training claims are support vectors, so the classes overlap a lot.
-#   Many unpaid claims are "below deductible" or "not actual flood". That depends on what happened inside
-#   the house, which we cannot know at filing time without leakage.
-# - **Practical reading:** the model is good for triage (which claims to inspect first). It cannot replace
-#   the adjuster.
+# - **Open claims.** Unpaid claims with no reason grow from 2-10% (2020-2023) to 13.4% (2024) and 19.1% (2025). They
+#   are most likely still open. Removing them changes ROC-AUC by less than 0.01, so the earlier results were not biased.
+# - **Rain.** The small tree's first split is 3-day rain (<= 48 mm). Claims with less than 40 mm are paid 60% of the
+#   time in 2020-2023 (68% in 2024-2025), against 83% (88%) above it. In the test years the *median* pattern even
+#   reverses (paid 63 mm, "no flood damage" 81 mm, against 159 mm and 148 mm in training), because 51.5% of test claims
+#   come from Helene, which rained on almost everyone. The signal is in the low-rain tail, not in the median
+#   (Section 15.4).
+# - **ACS/NRI context does not help on the time split** (0.782 vs 0.787). It helps the event-grouped CV and makes it
+#   more stable, but neighbourhood values partly act as location IDs (notebook 02).
+# - **Course models** (set C): tree 0.706, naive Bayes 0.622, k-NN 0.695, logistic 0.689, SVM 0.696, MLP 0.771,
+#   LightGBM 0.774. The MLP comes close to LightGBM but does not beat it.
+# - **Operating point:** a threshold of 0.65 chosen on 2023 (with a separate model trained on 2020-2022) gives, on
+#   2024-2025 with the main 2020-2023 model, recall 0.49 and precision 0.40 for "not paid" (3x the base rate), and
+#   balanced accuracy 0.69.
+# - **Calibration:** with event data the Brier score is 0.099 (constant-rate reference 0.118), but all models
+#   under-predict payment in the test years (mean prediction 0.80 vs 86.8% paid). Use the ranking, and re-calibrate the
+#   probabilities on a recent season before reading them as chances.
+# - **SHAP:** 61% NFIP, 21% event, 18% context. Top drivers: deductible, building age, elevation difference, 3-day
+#   rain, state.
+# - **Per event:** ROC 0.82 on Helene, but 0.67-0.78 on the other large events. Each storm behaves differently.
+# - **Why not higher:** 44% of the SVM training claims are support vectors, so the classes overlap a lot. Every kind
+#   of non-payment scores between 0.78 and 0.80: what decides payment happened inside the house, which we cannot
+#   know at filing time without leakage.
+# - **Practical reading:** route the top-scored claims to a faster desk review (3.9 times more unpaid claims there than
+#   on average). The model cannot replace the adjuster.

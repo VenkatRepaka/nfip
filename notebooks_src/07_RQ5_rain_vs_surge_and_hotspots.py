@@ -100,7 +100,7 @@ plt.show()
 # **Reading part (a).** Outside the SFHA, "rain accumulation" is still the dominant cause in 2020-2025: 75.9% of the
 # claims coded rain, river or surge (66.1% of all codes). This is below the 87.1% that Nelson-Mercer et al. report for
 # 1978-2021. Two reasons: our label is the adjuster's cause code, not their streamflow method, and our period has big
-# surge hurricanes. The share drops to 49.8% in 2022 (Hurricane Ian). Inside the SFHA, surge is 35% of claims.
+# surge hurricanes. The share drops to 49.9% in 2022 (Hurricane Ian). Inside the SFHA, surge is 35% of claims.
 # The PRISM rain and the coast distance agree with the codes: surge claims sit 1.8 km from the coast (median) and had the
 # least rain (77 mm), river claims are 25 km inland, and rain claims had 142 mm. The label is consistent enough to model.
 
@@ -174,6 +174,20 @@ comparison_table = pd.DataFrame(comparison_rows).round(3)
 comparison_table.to_csv(TABLE_DIR / '07_rq5_cause_models.csv', index=False)
 print(comparison_table.to_string(index=False))
 
+# %% [markdown]
+# **Is the (small) difference between NFIP-only and NFIP + event real?** We put a 95% confidence interval on the change
+# in LightGBM macro-F1, resampling whole events (event-block bootstrap, 500 repeats).
+
+# %%
+cause_test_scored = test_claims.assign(prediction_A=predictions_by_set['A. NFIP only'],
+                                       prediction_B=predictions_by_set['B. NFIP + event (PRISM, HURDAT2, coast)'],
+                                       prediction_C=predictions_by_set['C. NFIP + event + context (ACS, NRI)'])
+cause_bootstrap = event_block_bootstrap(cause_test_scored, TARGET,
+                                        {'A. NFIP only': 'prediction_A', 'B. + event': 'prediction_B', 'C. + event + context': 'prediction_C'},
+                                        {'macro_F1': lambda y, p: f1_score(y, p, average='macro')}, baseline='A. NFIP only', n_repeats=500).round(4)
+cause_bootstrap.to_csv(TABLE_DIR / '07_rq5_cause_bootstrap.csv', index=False)
+print(cause_bootstrap.to_string(index=False))
+
 # %%
 best_predictions = predictions_by_set['C. NFIP + event + context (ACS, NRI)']
 print(classification_report(test_claims[TARGET], best_predictions, digits=3))
@@ -188,10 +202,11 @@ plt.savefig(FIGURE_DIR / '07_cause_confusion.png', dpi=120)
 plt.show()
 
 # %% [markdown]
-# **Reading part (b).** This result surprised us. **The external features do not improve LightGBM** (macro-F1 0.581
-# NFIP-only, 0.581 with event data, 0.588 with context). The reason: NFIP already contains latitude, longitude and the
-# flood zone (V zone = coast), which together say most of what coast distance says. The external data does help the
-# simpler k-NN (0.493 -> 0.518). A depth-3 tree on **only four** external features (coast distance, storm wind, storm
+# **Reading part (b).** This result surprised us. **The external features barely improve LightGBM** (macro-F1 0.579
+# NFIP-only, 0.584 with event data, 0.590 with context), and the event-block bootstrap shows the gain is not clear: B vs A
+# +0.005 [95% CI -0.016, +0.061], C vs A +0.011 [-0.011, +0.069]; both intervals contain 0. The reason: NFIP already
+# contains latitude, longitude and the flood zone (V zone = coast), which together say most of what coast distance says.
+# The external data does help the simpler k-NN (0.452 -> 0.496). A depth-3 tree on **only four** external features (coast distance, storm wind, storm
 # distance, rain) reaches macro-F1 0.473 with rules a person can read: "within 6 km of the coast -> surge, unless
 # rain was heavy and the wind weak; further inland and close to the track -> river; far from the track -> rain".
 # Per class: surge is found well (recall 0.87), river is moderate, and rain claims are often confused with surge
@@ -324,11 +339,12 @@ plt.show()
 # **Reading the hotspots.** The sensitivity table shows the classic DBSCAN "chaining" problem (Lecture 09): with
 # eps of 15-20 km, the Florida Gulf coast links into one hotspot holding 76% of all large losses. With eps = 12 km we
 # get 8 hotspots, and 18% of large losses are noise (scattered). Each hotspot belongs to one or two storms:
-# - **Tampa Bay / Pinellas (Helene, 13,630 large losses)** and **Fort Myers / Naples (Ian, 8,588)**: about half are
-#   coded surge, and almost all are inside the SFHA (only 1-2% outside). These two hold 76% of the hotspot claims.
-# - **Fort Lauderdale (April 2023 flooding, 375)**: 97% coded rain accumulation, the clearest **pluvial** hotspot,
+# - **Tampa Bay / Pinellas (Helene, 13,669 large losses)** and **Fort Myers / Naples (Ian, 8,596)**: about half are
+#   coded surge, and almost all are inside the SFHA (only 1-2% outside). These two hold 93% of the hotspot claims
+#   (76% of all large losses).
+# - **Fort Lauderdale (April 2023 flooding, 371)**: 97% coded rain accumulation, the clearest **pluvial** hotspot,
 #   with no hurricane at all.
-# - **Daytona / Flagler (Milton, 285)**: 30% of large losses outside the SFHA, the highest share of any hotspot.
+# - **Daytona / Flagler (Milton, 286)**: 30% of large losses outside the SFHA, the highest share of any hotspot.
 # - **Louisiana (Ida; 2021 spring storms)** and **New York / New Jersey (Ida's remnant rain)**: rain-coded, almost no
 #   surge, and 10-20% outside the SFHA.
 # The inland Helene damage in western North Carolina is too spread out for min_samples = 150 within 12 km, but the KDE
@@ -378,13 +394,94 @@ plt.tight_layout()
 plt.savefig(FIGURE_DIR / '07_lisa_large_loss.png', dpi=110)
 plt.show()
 
+# %% [markdown]
+# ## 5.1 Two checks on the Moran's I: missing rates and small counties
+#
+# 1. **`fillna(0)`.** A county whose claims all have no recorded damage has no large-loss rate. Above we filled it with
+#    0, which treats "no data" as "no large losses". We count how many counties this affects and redo Moran's I without
+#    them.
+# 2. **Small counts are noisy.** A county with 20 claims and 6 large losses has a rate of 30%, but one more or one fewer
+#    large loss moves it by 5 points. `Moran_Rate` (esda) first applies **empirical Bayes smoothing**: each county's
+#    rate is pulled towards the overall rate, more strongly when the county has few claims. Then it computes Moran's I.
+
+# %%
+from esda.moran import Moran_Rate
+
+county_counts = claims.groupby('county_geoid').agg(claims_with_damage=('large_loss_flag', lambda s: s.notna().sum()),
+                                                   large_losses=('large_loss_flag', lambda s: (s == 1).sum())).reset_index()
+geoid_column = 'county_geoid' if 'county_geoid' in county_map.columns else 'GEOID'
+rate_map = county_map.drop(columns=[c for c in ['claims_with_damage', 'large_losses'] if c in county_map.columns]).merge(
+    county_counts, left_on=geoid_column, right_on='county_geoid', how='left', suffixes=('', '_counts'))
+counties_filled_with_zero = int(rate_map['large_loss_rate'].isna().sum())
+print(f'Counties in the Moran analysis: {len(rate_map)}; with no damage data (large-loss rate filled with 0): {counties_filled_with_zero}')
+
+rate_map = rate_map[rate_map['claims_with_damage'] > 0].reset_index(drop=True)
+rate_weights = Queen.from_dataframe(rate_map, use_index=False, silence_warnings=True)
+has_neighbour = np.array([len(rate_weights.neighbors[i]) > 0 for i in range(len(rate_map))])
+rate_map = rate_map[has_neighbour].reset_index(drop=True)
+rate_weights = Queen.from_dataframe(rate_map, use_index=False, silence_warnings=True)
+rate_weights.transform = 'r'
+np.random.seed(SEED)
+moran_raw_no_fill = Moran(rate_map['large_losses'] / rate_map['claims_with_damage'], rate_weights, permutations=499)
+np.random.seed(SEED)
+moran_eb = Moran_Rate(rate_map['large_losses'].values.astype(float), rate_map['claims_with_damage'].values.astype(float),
+                      rate_weights, adjusted=True, permutations=499)
+moran_checks = pd.DataFrame([
+    {'version': 'raw rate, missing filled with 0 (Section 5)', 'counties': len(county_map), 'morans_I': moran.I, 'p_value': moran.p_sim},
+    {'version': 'raw rate, counties without damage data removed', 'counties': len(rate_map), 'morans_I': moran_raw_no_fill.I, 'p_value': moran_raw_no_fill.p_sim},
+    {'version': 'empirical Bayes smoothed rate (Moran_Rate)', 'counties': len(rate_map), 'morans_I': moran_eb.I, 'p_value': moran_eb.p_sim},
+]).round(4)
+moran_checks['counties_filled_with_zero_in_section_5'] = counties_filled_with_zero
+moran_checks.to_csv(TABLE_DIR / '07_rq5_moran_checks.csv', index=False)
+print(moran_checks.to_string(index=False))
+
+# %% [markdown]
+# **Reading the checks.** The `fillna(0)` affects **0 counties**: every county with at least 20 claims has some
+# recorded damage, so the raw Moran's I is the same with and without the fill (0.449). After empirical Bayes smoothing
+# Moran's I is even a little higher (0.466, permutation p = 0.002). The clustering of large losses is not an artefact of
+# empty or small counties.
+
 # %%
 results_rq5 = {'cause_share_by_map_area': share_table.round(2).reset_index().to_dict('records'),
                'outside_sfha_rain_share_all_codes_pct': float((all_coded['causeOfDamage'] == '4').mean() * 100),
                'cause_models': comparison_table.to_dict('records'), 'n_hotspots': int(large_points['hotspot'].max() + 1),
                'top_hotspots': hotspot_summary.round(1).head(10).reset_index().to_dict('records'),
-               'morans_I': float(moran.I), 'morans_p': float(moran.p_sim)}
+               'morans_I': float(moran.I), 'morans_p': float(moran.p_sim),
+               'morans_I_eb': float(moran_eb.I), 'morans_p_eb': float(moran_eb.p_sim),
+               'n_high_high': int((county_map['lisa'] == 'High-High (hot spot)').sum()),
+               'n_low_low': int((county_map['lisa'] == 'Low-Low (cold spot)').sum())}
 json.dump(results_rq5, open(TABLE_DIR / '07_rq5_results.json', 'w'), indent=2, default=str)
+
+# %% [markdown]
+# ---
+# ## The numbers behind the answer
+#
+# Read back from the saved tables (`tables/07_*`).
+
+# %%
+results_saved = json.load(open(TABLE_DIR / '07_rq5_results.json'))
+cause_saved = pd.read_csv(TABLE_DIR / '07_rq5_cause_models.csv')
+cause_boot_saved = pd.read_csv(TABLE_DIR / '07_rq5_cause_bootstrap.csv')
+hotspots_saved = pd.read_csv(TABLE_DIR / '07_rq5_dbscan_hotspots.csv')
+moran_saved = pd.read_csv(TABLE_DIR / '07_rq5_moran_checks.csv')
+share_saved = pd.DataFrame(results_saved['cause_share_by_map_area'])
+rows = [('outside-SFHA claims coded rain/river/surge: % rain (all codes)', results_saved['outside_sfha_rain_share_all_codes_pct'], '07_rq5_results.json')]
+for record in results_saved['cause_share_by_map_area']:
+    rows.append((f"cause shares {list(record.values())[0]}", ', '.join(f'{k}: {v}' for k, v in list(record.items())[1:]), '07_rq5_results.json'))
+for _, r in cause_saved.iterrows():
+    rows.append((f"{r['model']} {r['feature_set'][:30]}: macro-F1 / balanced acc", f"{r['macro_F1']:.3f} / {r['balanced_accuracy']:.3f}", '07_rq5_cause_models'))
+for _, b in cause_boot_saved.dropna(subset=['gain_vs_baseline']).iterrows():
+    rows.append((f"LightGBM macro-F1 gain {b['model']} vs A [95% CI]", f"{b['gain_vs_baseline']:+.3f} [{b['ci_95_low']:+.3f}, {b['ci_95_high']:+.3f}]", '07_rq5_cause_bootstrap'))
+rows.append(('DBSCAN hotspots', results_saved['n_hotspots'], '07_rq5_results.json'))
+top_two = hotspots_saved.head(2)
+rows.append(('two largest hotspots: share of hotspot large-loss claims %', top_two['large_loss_claims'].sum() / hotspots_saved['large_loss_claims'].sum() * 100, '07_rq5_dbscan_hotspots'))
+for _, h in hotspots_saved.head(8).iterrows():
+    rows.append((f"hotspot {int(h['hotspot'])} ({h['main_event']})", f"{int(h['large_loss_claims']):,} large losses, outside SFHA {h['share_outside_SFHA_%']}%, rain {h['share_rain_cause_%']}%, surge {h['share_surge_cause_%']}%", '07_rq5_dbscan_hotspots'))
+for _, m in moran_saved.iterrows():
+    rows.append((f"Moran's I: {m['version']}", f"{m['morans_I']:.3f} (p = {m['p_value']:.3f}, {int(m['counties'])} counties)", '07_rq5_moran_checks'))
+rows += [('counties filled with 0 in Section 5', int(moran_saved['counties_filled_with_zero_in_section_5'].iloc[0]), '07_rq5_moran_checks'),
+         ('LISA High-High / Low-Low counties', f"{results_saved['n_high_high']} / {results_saved['n_low_low']}", '07_rq5_results.json')]
+answer_numbers = show_answer_numbers(rows, '07_rq5')
 
 # %% [markdown]
 # ---
@@ -393,23 +490,24 @@ json.dump(results_rq5, open(TABLE_DIR / '07_rq5_results.json', 'w'), indent=2, d
 # > **RQ5 (a). Are claims outside the SFHA still mostly rain-driven in 2020-2025?**
 #
 # **Yes, but less than before.** 75.9% of the outside-SFHA claims coded rain, river or surge are "rain accumulation"
-# (66.1% of all codes), against 87.1% in Nelson-Mercer et al. for 1978-2021. The share falls to 49.8% in 2022 (Ian).
+# (66.1% of all codes), against 87.1% in Nelson-Mercer et al. for 1978-2021. The share falls to 49.9% in 2022 (Ian).
 # PRISM rain and coast distance confirm that the adjuster's codes are physically consistent (surge: 1.8 km from the
 # coast, 77 mm rain; rain: 142 mm).
 #
 # > **RQ5 (b). Can PRISM, HURDAT2 and coast distance tell rain, river and surge claims apart?**
 #
-# **Partly, and the external data is not what makes it work.** LightGBM reaches macro-F1 about 0.58 (balanced accuracy
-# 0.60-0.63) with or without external features, because NFIP latitude, longitude and flood zone already encode the coast.
-# External data helps k-NN (0.49 -> 0.52), and four external features alone give a readable depth-3 tree (macro-F1
-# 0.47). Surge is recognised well (recall 0.87); rain is often confused with surge in hurricanes.
+# **Partly, and the external data is not what makes it work.** LightGBM reaches macro-F1 0.58-0.59 (balanced accuracy
+# 0.60-0.63) with or without external features (gain C vs A +0.011, 95% event-bootstrap CI -0.011 to +0.069, so not
+# clear), because NFIP latitude, longitude and flood zone already encode the coast. External data helps k-NN
+# (0.45 -> 0.50), and four external features alone give a readable depth-3 tree (macro-F1 0.47). Surge is recognised well (recall 0.87); rain is often confused with surge in hurricanes.
 #
 # > **RQ5 (c). Where are the large-loss hotspots?**
 #
-# Large losses are strongly clustered. County large-loss rates have **Moran's I = 0.45** (p = 0.002), with 40 High-High
-# counties (southwest Florida Gulf coast, western North Carolina / east Tennessee, and smaller groups in New Mexico and
-# Montana) and 53 Low-Low counties. DBSCAN (eps 12 km) finds 8 storm-specific hotspots. The two biggest (Tampa Bay /
-# Helene and Fort Myers / Ian) hold 76% of the hotspot claims; they are half surge and almost entirely inside the SFHA.
-# Smaller hotspots (Fort Lauderdale 2023, Louisiana, New York / New Jersey) are rain-driven, and there 10-30% of large
+# Large losses are strongly clustered. County large-loss rates have **Moran's I = 0.45** (p = 0.002; 0.47 after
+# empirical Bayes smoothing, and no county needed the `fillna(0)`), with 39 High-High counties (southwest Florida Gulf
+# coast, western North Carolina / east Tennessee, and smaller groups in New Mexico and Montana) and 28 Low-Low counties.
+# DBSCAN (eps 12 km) finds 8 storm-specific hotspots. The two biggest (Tampa Bay / Helene and Fort Myers / Ian) hold
+# 93% of the hotspot claims (76% of all large losses); they are half surge and almost entirely inside the SFHA.
+# Smaller hotspots (Fort Lauderdale 2023, Louisiana, New York / New Jersey) are rain-driven, and there 6-30% of large
 # losses are outside the mapped flood zone. **Addition to the published work:** pluvial large losses are not only a
 # "zone X, small claim" story; they form their own urban hotspots.

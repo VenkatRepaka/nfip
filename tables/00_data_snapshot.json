@@ -1,0 +1,187 @@
+{
+  "snapshot_written_local_time": "2026-11-25T15:37:19",
+  "files": [
+    {
+      "file": "data_raw/NfipClaimsV3.parquet",
+      "version": "OpenFEMA FIMA NFIP Redacted Claims v3, bulk parquet",
+      "present": true,
+      "size_bytes": 107977813,
+      "size_mb": 108.0,
+      "downloaded_local_time": "2026-11-25T13:32:29",
+      "sha256": "96a3e607e9d649811c7a863715af76a72bdb456c0372a9fa138be0d6cba6f43e",
+      "rows": 2731064,
+      "data_as_of": "2026-11-16 00:00:00+00:00"
+    },
+    {
+      "file": "data_raw/policies/NfipPoliciesV3.parquet",
+      "version": "OpenFEMA FIMA NFIP Redacted Policies v3, bulk parquet (notebook 09)",
+      "present": true,
+      "size_bytes": 2520476830,
+      "size_mb": 2520.5,
+      "downloaded_local_time": "2026-11-25T14:26:33",
+      "sha256": "de59632ea5e06e0fcb9e3da2f0bfd6dac09199c8dc7db28d2d47710136b447e9",
+      "rows": 74778941
+    },
+    {
+      "file": "data_raw/nfip_fields.json",
+      "version": "OpenFEMA data dictionary for NfipClaims v3",
+      "present": true,
+      "size_bytes": 67549,
+      "size_mb": 0.1,
+      "downloaded_local_time": "2026-11-25T13:32:29",
+      "sha256": "fce091792f7bfae76341f297bd56bd84f8580e9f4c71696f25ec92aeb50f2457"
+    },
+    {
+      "file": "data_raw/hurdat/hurdat2-1851-2025.txt",
+      "version": "NOAA NHC HURDAT2 Atlantic 1851-2025, release file hurdat2-1851-2025-092326.txt",
+      "present": true,
+      "size_bytes": 7071568,
+      "size_mb": 7.1,
+      "downloaded_local_time": "2026-11-25T13:41:46",
+      "sha256": "75202780ce56c8458f16fbef5fb8a026b99b00878dbb95c458211b3e6ef125b4"
+    },
+    {
+      "file": "data_raw/nri/NRI_Table_Counties.zip",
+      "version": "FEMA National Risk Index v1.20 (December 2025), county table",
+      "present": true,
+      "size_bytes": 24966535,
+      "size_mb": 25.0,
+      "downloaded_local_time": "2026-11-25T13:42:05",
+      "sha256": "b99dae90a317b16630d7f9b1faa4a2784d5ca458761c1d3ab9646f046df9d072"
+    },
+    {
+      "file": "data_raw/census/acsdt5y2023-b01003.dat",
+      "version": "Census ACS 2019-2023 5-year Summary File, table B01003",
+      "present": true,
+      "size_bytes": 18311997,
+      "size_mb": 18.3,
+      "downloaded_local_time": "2026-11-25T13:41:51",
+      "sha256": "24ae3f523b4c54332ce0a71ba534569685a8a729056f975915d860d1eb943565"
+    },
+    {
+      "file": "data_raw/census/acsdt5y2023-b03002.dat",
+      "version": "Census ACS 2019-2023 5-year Summary File, table B03002",
+      "present": true,
+      "size_bytes": 82877683,
+      "size_mb": 82.9,
+      "downloaded_local_time": "2026-11-25T13:42:02",
+      "sha256": "cae53cb92e7ca446e990dde45b4d767e6399badf117b805503b2ba0bdcdf3a9c"
+    },
+    {
+      "file": "data_raw/census/acsdt5y2023-b19013.dat",
+      "version": "Census ACS 2019-2023 5-year Summary File, table B19013",
+      "present": true,
+      "size_bytes": 17884943,
+      "size_mb": 17.9,
+      "downloaded_local_time": "2026-11-25T13:41:52",
+      "sha256": "c9007017b7bb29ba758c77612ec9a4a0b897a4ed931d527754629866f580a110"
+    },
+    {
+      "file": "data_raw/census/acsdt5y2023-b25001.dat",
+      "version": "Census ACS 2019-2023 5-year Summary File, table B25001",
+      "present": true,
+      "size_bytes": 17781864,
+      "size_mb": 17.8,
+      "downloaded_local_time": "2026-11-25T14:08:37",
+      "sha256": "dc6f4a1cceb6f1f05d8ef61c0805e820c957bf41fb011851850779b693b67eaf"
+    },
+    {
+      "file": "data_raw/census/acsdt5y2023-b25003.dat",
+      "version": "Census ACS 2019-2023 5-year Summary File, table B25003",
+      "present": true,
+      "size_bytes": 26878591,
+      "size_mb": 26.9,
+      "downloaded_local_time": "2026-11-25T13:41:55",
+      "sha256": "c8d9f1e89343695c6e453216d762c4a856a91556fa32f742dc782935bd7adae6"
+    },
+    {
+      "file": "data_raw/census/acsdt5y2023-b25034.dat",
+      "version": "Census ACS 2019-2023 5-year Summary File, table B25034",
+      "present": true,
+      "size_bytes": 49971974,
+      "size_mb": 50.0,
+      "downloaded_local_time": "2026-11-25T14:08:39",
+      "sha256": "3fe7adfa3d070066c4ba4861a125e2a9ef5b778bf7df5f2eaa7af65d0ebb5a14"
+    },
+    {
+      "file": "data_raw/census/acsdt5y2023-b25035.dat",
+      "version": "Census ACS 2019-2023 5-year Summary File, table B25035",
+      "present": true,
+      "size_bytes": 15417844,
+      "size_mb": 15.4,
+      "downloaded_local_time": "2026-11-25T13:41:57",
+      "sha256": "ffc4e375e4d814fa690a132172adc3cc712de88ea909100ce089f05b84c2c952"
+    },
+    {
+      "file": "data_raw/census/acsdt5y2023-b25077.dat",
+      "version": "Census ACS 2019-2023 5-year Summary File, table B25077",
+      "present": true,
+      "size_bytes": 18467363,
+      "size_mb": 18.5,
+      "downloaded_local_time": "2026-11-25T13:41:54",
+      "sha256": "302d57367033bd13b824c8d658cd3ef98819adb366d9ddd4c3861a9707eb734c"
+    },
+    {
+      "file": "data_raw/census/acsdt5y2023-c17002.dat",
+      "version": "Census ACS 2019-2023 5-year Summary File, table C17002",
+      "present": true,
+      "size_bytes": 42011261,
+      "size_mb": 42.0,
+      "downloaded_local_time": "2026-11-25T13:41:59",
+      "sha256": "42d88cf45cd6825801953a4a410c7d76268441d8814df767b8e31fb79a9e9bf0"
+    },
+    {
+      "file": "data_raw/census/2023_Gaz_tracts_national.zip",
+      "version": "Census 2023 Gazetteer, tracts",
+      "present": true,
+      "size_bytes": 2420572,
+      "size_mb": 2.4,
+      "downloaded_local_time": "2026-11-25T14:08:39",
+      "sha256": "d97f27a434fb9f7b9994ec15ea5bbe41f7b7f4c2aabb3dfe437448bf4e1bc93c"
+    },
+    {
+      "file": "data_raw/census/tab20_tract20_tract10_natl.txt",
+      "version": "Census 2020-2010 tract relationship file",
+      "present": true,
+      "size_bytes": 18686287,
+      "size_mb": 18.7,
+      "downloaded_local_time": "2026-11-25T14:08:40",
+      "sha256": "3c2ea8e13bf359349cc6ee042980e539d0a8032328ce8c5ae10679b9000e3d17"
+    },
+    {
+      "file": "data_raw/boundaries/ne_10m_coastline.zip",
+      "version": "Natural Earth 1:10m coastline",
+      "present": true,
+      "size_bytes": 3069451,
+      "size_mb": 3.1,
+      "downloaded_local_time": "2026-11-25T13:41:49",
+      "sha256": "bfa04cdbcbef07ef90dfca1dabb48062eca29900a113df0f389303e255484017"
+    },
+    {
+      "file": "data_raw/boundaries/cb_2023_us_state_20m.zip",
+      "version": "Census 2023 cartographic boundaries, states",
+      "present": true,
+      "size_bytes": 186432,
+      "size_mb": 0.2,
+      "downloaded_local_time": "2026-11-25T13:42:05",
+      "sha256": "0fd2d6562708ff8182c00d5d25b5556d049ecf2794d97b89ed2dac4d5e9e2c8d"
+    },
+    {
+      "file": "data_raw/boundaries/cb_2023_us_county_20m.zip",
+      "version": "Census 2023 cartographic boundaries, counties",
+      "present": true,
+      "size_bytes": 900375,
+      "size_mb": 0.9,
+      "downloaded_local_time": "2026-11-25T13:42:05",
+      "sha256": "479956f6e3cb1573705c1ceb35d17ca7cd1b5179f3947ee6adbaa274b7e931e4"
+    }
+  ],
+  "prism_daily_grids": {
+    "version": "PRISM AN daily precipitation 4 km (provisional/stable as downloaded)",
+    "files": 2199,
+    "first_file": "prism_ppt_us_25m_20191226.zip",
+    "last_file": "prism_ppt_us_25m_20260101.zip",
+    "total_size_mb": 3370.0,
+    "sha256_of_names_and_sizes": "b66f512e20484e66f49ff23bd3d26e824125e55e9f4ac80a309a686207a896e6"
+  }
+}

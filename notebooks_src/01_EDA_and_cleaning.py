@@ -139,7 +139,8 @@ def log_row_step(step_name, reason, data_before, data_after):
     print(f'{step_name:<45} removed {len(data_before) - len(data_after):>7,}   rows left {len(data_after):>8,}')
 
 
-full_national_rows = 2_725_989   # printed in notebook 00 (all years, all states)
+import json
+full_national_rows = int(json.load(open(TABLE_DIR / '00_data_snapshot.json'))['files'][0]['rows'])   # frozen snapshot from notebook 00 (all years, all states)
 row_log.append({'step': '0a. NFIP v3 national file', 'reason': 'all years and states',
                 'rows_before': full_national_rows, 'rows_removed': 0, 'rows_after': full_national_rows})
 row_log.append({'step': '0b. loss date 2020-2025, CONUS only', 'reason': 'study window; PRISM covers CONUS only (nb 00)',
@@ -648,7 +649,18 @@ print(claims[['building_age_at_loss', 'policy_tenure_years', 'log_building_cover
 # ---
 # # Section 8: Imputation, Column by Column
 #
-# Every rule below is learned from the **training years (2020-2023)** and applied to all rows.
+# Every rule below is learned from the **training years (2020-2023)** and applied to all rows, with two
+# honest notes:
+#
+# 1. **Rain is the exception.** The rain fill (rule 8) uses the median of claims in the **same state on the same
+#    loss date, across all years** (so test-year rows are included). This is a same-day fill from nearby claims of
+#    the same storm, not a learned statistic, and it contains no outcome information. Very few claims need it
+#    (points on water or at the edge of the grid; see the imputation log).
+# 2. **Imputation happens before the event-grouped cross-validation.** The training-year medians are computed on
+#    all of 2020-2023, so inside the CV each validation fold has seen medians that partly come from its own events.
+#    A median of more than 100,000 rows hardly moves when one event is removed, so the effect is tiny. The main
+#    2024-2025 test is not affected at all.
+#
 # Each imputed column also gets a `_was_missing` flag, so a model can learn if "missing" itself
 # carries signal (as it does for elevation).
 
@@ -764,7 +776,7 @@ for column in rain_columns:
     event_state_median = claims.groupby(['floodEvent', 'state'])[column].transform('median')
     state_date_median = claims.groupby(['state', 'dateOfLoss'])[column].transform('median')
     claims[column] = claims[column].fillna(state_date_median).fillna(event_state_median).fillna(0)
-    record_imputation(column, n_missing, 'median of claims in same state and loss date, then same event, then 0',
+    record_imputation(column, n_missing, 'median of claims in same state and loss date (all years), then same event, then 0',
                       'point fell on water / grid edge')
 
 # --- 9. External: storm. No storm in the +/- 3 day window is a real answer, not a missing value ---
@@ -851,6 +863,13 @@ leakage_rows = [
 leakage_table = pd.DataFrame(leakage_rows, columns=['feature', 'kind', 'why it leaks', 'excluded from'])
 leakage_table.to_csv(TABLE_DIR / '01_leakage_table.csv', index=False)
 print(leakage_table.to_string(index=False))
+
+# %% [markdown]
+# **A softer timing issue: `storm_lifetime_max_wind_kt`.** This feature is the storm's strongest wind over its
+# **whole life**. If a claim's loss date is *before* the storm reached its peak, this value was not known yet on that
+# day. It is not an outcome leak (it says nothing about the house), so we keep it. But it fits the prediction moment
+# "a claim filed **after** a known storm" (post-event triage), not a forecast made while the storm is still coming.
+# The other storm features (distance, wind and category **at the closest point**) do not have this problem.
 
 # %% [markdown]
 # ## 9.1 Proof that the leak is real

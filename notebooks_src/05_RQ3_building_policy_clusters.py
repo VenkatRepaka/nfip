@@ -136,44 +136,106 @@ plt.savefig(FIGURE_DIR / '05_choose_k.png', dpi=120)
 plt.show()
 
 # %% [markdown]
-# ## 2.2 The noise baseline (Lecture 10, Section 4)
+# ## 2.2 The noise baseline, done properly: 20 shuffled datasets and the gap statistic (Lecture 10, Section 4)
 #
-# Every algorithm returns clusters, even on noise. To know if our silhouette is "good", we build a
-# **random dataset of the same shape**: each column is shuffled on its own. This keeps every column's
-# distribution but destroys the links between columns. Real structure lives in those links.
+# Every algorithm returns clusters, even on noise. To know if our silhouette is "good", we build **random datasets of
+# the same shape**: each column is shuffled on its own. This keeps every column's distribution but destroys the links
+# between columns. Real structure lives in those links.
+#
+# An earlier version of this notebook used only **3** shuffled datasets. With so few, the noise mean moved enough
+# between runs to flip the choice between k = 2 and k = 4. Now we use **20 shuffled datasets** for every k from 2 to 10
+# and two criteria:
+#
+# 1. **Silhouette gap** = real silhouette - mean noise silhouette. We also report how many noise standard deviations
+#    the real value lies above the noise (a z-score), and whether it beats **all 20** noise datasets.
+# 2. **The gap statistic** (Tibshirani, Walther and Hastie, 2001). It compares the k-means inertia W(k) with the
+#    inertia of the shuffled data: Gap(k) = mean(log W_noise(k)) - log W(k). The rule picks the **smallest k with
+#    Gap(k) >= Gap(k+1) - s(k+1)**, where s is the noise standard deviation times sqrt(1 + 1/20). (Tibshirani et al. draw
+#    the reference data uniformly in a box; with 0/1 flags a box would create values like 0.37, so we use the
+#    column-shuffled data as the reference, the same idea with the same column distributions.)
 
 # %%
+NOISE_REPEATS = 20
+noise_k_values = list(range(2, 11))
 rng = np.random.default_rng(SEED)
 noise_rows = []
-for repeat in range(3):
+for repeat in range(NOISE_REPEATS):
     shuffled = scaled_sample.copy()
     for column_index in range(shuffled.shape[1]):
         shuffled[:, column_index] = rng.permutation(shuffled[:, column_index])
-    for k in [2, 3, 4, 5, 6, 8]:
-        labels = KMeans(n_clusters=k, n_init=10, random_state=SEED).fit_predict(shuffled)
-        noise_rows.append({'k': k, 'repeat': repeat, 'noise_silhouette': silhouette_score(shuffled, labels, sample_size=8000, random_state=SEED)})
-noise_table = pd.DataFrame(noise_rows).groupby('k')['noise_silhouette'].agg(['mean', 'std']).reset_index()
+    for k in noise_k_values:
+        noise_model = KMeans(n_clusters=k, n_init=10, random_state=SEED).fit(shuffled)
+        noise_rows.append({'k': k, 'repeat': repeat, 'noise_silhouette': silhouette_score(shuffled, noise_model.labels_, sample_size=8000, random_state=SEED),
+                           'noise_log_inertia': np.log(noise_model.inertia_)})
+noise_draws = pd.DataFrame(noise_rows)
+noise_table = noise_draws.groupby('k').agg(noise_mean=('noise_silhouette', 'mean'), noise_std=('noise_silhouette', 'std'),
+                                           noise_max=('noise_silhouette', 'max'), noise_log_W_mean=('noise_log_inertia', 'mean'),
+                                           noise_log_W_std=('noise_log_inertia', 'std')).reset_index()
 comparison = k_table.merge(noise_table, on='k')
-comparison['real_minus_noise'] = comparison['silhouette'] - comparison['mean']
-print(comparison[['k', 'silhouette', 'mean', 'std', 'real_minus_noise']].round(4).rename(columns={'mean': 'noise_mean', 'std': 'noise_std'}).to_string(index=False))
-
-# %% [markdown]
-# **Reading the comparison.** Our features are mostly 0/1 flags, and 0/1 columns create "corners" even when
-# shuffled, so the noise silhouette is not near zero (about 0.10-0.12). What matters is the **gap** between real
-# and noise. Every k has a clear positive gap, so the links between columns do create groups.
-#
-# **How we choose k.** k = 2 has the largest gap (0.137), but it only splits multi-unit / commercial policies from
-# homes, which every analyst already knows. Lecture 08 asks for groups that are *useful*. So the rule is: take the
-# smallest k of at least 4 whose gap is still clearly above noise (> 0.05). This gives k = 4 (gap 0.063). k = 6 has a
-# larger gap (0.100); we note it as a reasonable alternative.
+comparison['real_minus_noise'] = comparison['silhouette'] - comparison['noise_mean']
+comparison['z_vs_noise'] = comparison['real_minus_noise'] / comparison['noise_std']
+comparison['beats_all_20_noise'] = comparison['silhouette'] > comparison['noise_max']
+comparison['gap_statistic'] = comparison['noise_log_W_mean'] - np.log(comparison['inertia'])
+comparison['gap_s'] = comparison['noise_log_W_std'] * np.sqrt(1 + 1 / NOISE_REPEATS)
+comparison.round(4).to_csv(TABLE_DIR / '05_rq3_k_selection.csv', index=False)
+print(comparison[['k', 'silhouette', 'noise_mean', 'noise_std', 'real_minus_noise', 'z_vs_noise', 'beats_all_20_noise',
+                  'gap_statistic', 'gap_s']].round(4).to_string(index=False))
 
 # %%
-CHOSEN_K = int(comparison.loc[comparison['real_minus_noise'].idxmax(), 'k'])
-CHOSEN_K = max(CHOSEN_K, 4) if comparison.loc[comparison['k'] == max(CHOSEN_K, 4), 'real_minus_noise'].iloc[0] > 0.05 else CHOSEN_K
-print(f'Chosen k = {CHOSEN_K} (largest real-minus-noise gap, at least 4 groups if the gap stays clearly positive)')
+fig, axes = plt.subplots(1, 2, figsize=(15, 4.2))
+axes[0].plot(comparison['k'], comparison['silhouette'], 'o-', color='#C00000', label='real data')
+axes[0].errorbar(comparison['k'], comparison['noise_mean'], yerr=2 * comparison['noise_std'], fmt='s--', color='#888888',
+                 capsize=3, label='20 shuffled datasets (mean +/- 2 SD)')
+axes[0].set_title('Silhouette: real data vs noise')
+axes[0].legend()
+axes[1].errorbar(comparison['k'], comparison['gap_statistic'], yerr=comparison['gap_s'], fmt='o-', color='#0070C0', capsize=3)
+axes[1].set_title('Gap statistic (Tibshirani et al. 2001), error bar = s(k)')
+for ax in axes:
+    ax.set_xlabel('k')
+plt.tight_layout()
+plt.savefig(FIGURE_DIR / '05_noise_baseline_gap.png', dpi=120)
+plt.show()
+
+# %%
+silhouette_gap_best_k = int(comparison.loc[comparison['real_minus_noise'].idxmax(), 'k'])
+gap_rule_k = None
+for position in range(len(comparison) - 1):
+    this_row, next_row = comparison.iloc[position], comparison.iloc[position + 1]
+    if this_row['gap_statistic'] >= next_row['gap_statistic'] - next_row['gap_s']:
+        gap_rule_k = int(this_row['k'])
+        break
+gap_rule_text = gap_rule_k if gap_rule_k is not None else 'none in 2-10 (the gap keeps growing)'
+print(f'k with the largest silhouette gap over noise : {silhouette_gap_best_k}')
+print(f'k chosen by the Tibshirani gap rule          : {gap_rule_text}')
+
+# The design choice: k = 4 gives groups an analyst can use (Lecture 08: clusters must be useful). We keep it only if
+# k = 4 is clearly real structure: its silhouette must beat ALL 20 shuffled datasets. Otherwise we follow the data.
+K_BY_DESIGN = 4
+row_k4 = comparison.loc[comparison['k'] == K_BY_DESIGN].iloc[0]
+if row_k4['beats_all_20_noise']:
+    CHOSEN_K = K_BY_DESIGN
+    choice_reason = (f'k = {K_BY_DESIGN} kept by design: its silhouette {row_k4["silhouette"]:.3f} beats all 20 noise datasets '
+                     f'(max {row_k4["noise_max"]:.3f}, z = {row_k4["z_vs_noise"]:.1f})')
+else:
+    CHOSEN_K = silhouette_gap_best_k
+    choice_reason = f'k = {K_BY_DESIGN} does not beat all noise datasets, so we follow the data: k = {CHOSEN_K}'
+print('Chosen k =', CHOSEN_K, '->', choice_reason)
 kmeans_final = KMeans(n_clusters=CHOSEN_K, n_init=30, random_state=SEED).fit(scaled_sample)
 cluster_sample['cluster'] = kmeans_final.labels_
 print(cluster_sample['cluster'].value_counts().sort_index().to_string())
+
+# %% [markdown]
+# **Reading the k choice.** The three criteria do not agree, and we say so:
+# - The **largest silhouette gap** over noise is at **k = 2** (0.254 vs 0.132). But at k = 2 the shuffled data is very
+#   unstable (noise SD 0.066, maximum 0.314), so k = 2 does **not** beat all 20 noise sets (z = 1.8).
+# - The **Tibshirani gap rule** picks **k = 7**, but the gap keeps rising up to k = 10 (0.07 -> 0.23), so it has no
+#   clear elbow.
+# - From **k = 4 upward every k beats all 20 noise sets**. k = 4: 0.175 vs noise 0.119 +/- 0.017 (max 0.149,
+#   z = 3.2). k = 5-7 beat noise even more clearly (z about 7-8), and k = 6 has the best silhouette (0.204).
+#
+# **Decision: we keep k = 4.** It is defensible because it is clearly real structure (above every noise set), and its
+# four groups are easy to name and use. It is **not** the statistical optimum: k = 6-7 separate the data a little
+# better. We report this as a design choice, not as "the" number of groups.
 
 # %% [markdown]
 # ---
@@ -365,9 +427,39 @@ plt.show()
 # %% [markdown]
 # **Reading the t-SNE.** t-SNE shows many small islands. Each island is one "corner" of the 0/1 flags (for
 # example: post-FIRM, elevated, primary residence, no basement). The k-means clusters are **unions of islands**, and
-# each cluster occupies its own part of the map: C0 (post-FIRM homes) at the top, C1 (older homes) at the bottom
-# left, C2 (multi-unit / commercial) in the centre right and C3 (V-zone) as one separate island. PCA, being linear,
-# shows C0 and C1 as two overlapping clouds and spreads C2 along PC1.
+# each cluster occupies its own part of the map: C3 (newer, post-FIRM single-family homes) at the top, C1 (older,
+# pre-FIRM single-family homes) in the lower half, C2 (condo / multi-unit / commercial) in the centre right and C0
+# (V-zone) as one separate island on the right. PCA, being linear, shows C3 and C1 as two touching clouds and spreads
+# C2 along PC1; C0 is hidden inside the other clouds.
+
+# %% [markdown]
+# ## 7.0 Does the t-SNE picture depend on the perplexity?
+#
+# Perplexity is roughly the number of neighbours each point "pays attention to". Small values show fine local detail,
+# large values show broader structure. If the islands and the cluster colours look similar at 10, 40 and 100, the
+# picture is not an accident of one setting.
+#
+# **Reading the panel (figure below).** The main picture holds at all three values: C0 (V-zone) is always one separate
+# island, C1 and C3 always sit in different halves of the map, and C2 is always a central group. What changes is the
+# detail: at perplexity 10 the map breaks into many tiny fragments, at 100 the islands merge into fewer, bigger
+# blocks. So the cluster layout is robust; the exact number and shape of the islands is not.
+
+# %%
+fig, axes = plt.subplots(1, 3, figsize=(21, 6.5))
+for ax, perplexity in zip(axes, [10, 40, 100]):
+    if perplexity == 40:
+        points = tsne_points
+    else:
+        points = TSNE(n_components=2, perplexity=perplexity, init='pca', learning_rate='auto', random_state=SEED).fit_transform(plot_data)
+    for cluster, group_index in plot_rows.groupby('cluster').groups.items():
+        ax.scatter(points[group_index, 0], points[group_index, 1], s=3, alpha=0.6, color=palette[cluster], label=cluster_names[cluster][:45])
+    ax.set_title(f't-SNE, perplexity {perplexity}')
+    ax.set_xticks([])
+    ax.set_yticks([])
+axes[2].legend(markerscale=4, fontsize=8, loc='upper left', bbox_to_anchor=(1, 1))
+plt.tight_layout()
+plt.savefig(FIGURE_DIR / '05_tsne_perplexity_panel.png', dpi=100)
+plt.show()
 
 # %% [markdown]
 # ## 7.1 Now colour the same t-SNE map by the outcomes
@@ -396,9 +488,9 @@ plt.show()
 
 # %% [markdown]
 # **Reading the outcome maps.** Unpaid claims (red) are spread over almost every island. Large losses (purple)
-# gather clearly in the lower half of the map, where the older single-family homes (C1) and the multi-unit /
-# commercial policies (C2) are, and are rare in the upper part (post-FIRM homes, C0). Rain is spread over the whole
-# map: the building/policy groups do not know about the storm. This is why RQ1 and RQ2 needed the external data.
+# gather in the centre and lower half of the map, where the multi-unit / commercial policies (C2) and the older
+# single-family homes (C1) are, and are rare in the upper part (newer post-FIRM homes, C3). Rain is spread over the
+# whole map: the building/policy groups do not know about the storm. This is why RQ1 and RQ2 needed the external data.
 
 # %% [markdown]
 # ---
@@ -468,14 +560,15 @@ print(association_table.round(4).to_string(index=False))
 
 # %% [markdown]
 # **Reading Cramer's V.** With 250,000 claims every p-value is tiny, so significance alone means nothing. Cramer's
-# V gives the **size** of the association. For large loss, the 4 clusters (V = 0.198) beat flood zone (0.120) but not
-# occupancy type alone (0.226). For payment, the clusters (0.113) are similar to flood zone (0.110) and weaker than
-# occupancy (0.201). The clusters therefore carry outcome information, but one simple column carries as much.
+# V gives the **size** of the association. For large loss, the 4 clusters (V = 0.204) beat flood zone (0.120) but not
+# occupancy type alone (0.219). For payment, the clusters (0.114) are similar to flood zone (0.110) and weaker than
+# occupancy (0.196). The clusters therefore carry outcome information, but one simple column carries as much.
 #
-# **The profile is still informative.** Older single-family homes (C1) have the highest damage relative to value
-# (median 26% vs 5% for post-FIRM homes) and a large-loss rate of 11.7% vs 5.5%. Post-FIRM homes (C0) are paid least
-# often (78.4%): built to code, they often have damage below the deductible. Multi-unit / commercial (C2) has the
-# highest large-loss rate (26.1%), mostly because the insured amounts are larger.
+# **The profile is still informative.** Older pre-FIRM single-family homes (C1) have the highest damage relative to
+# value (median 26% vs 5% for newer post-FIRM homes, C3) and a large-loss rate of 11.7% vs 5.5%. Newer post-FIRM homes
+# (C3) are paid least often (78.3%): built to code, they often have damage below the deductible. Condo / multi-unit /
+# commercial (C2) has the highest large-loss rate (26.9%), mostly because the insured amounts are larger. V-zone
+# policies (C0) are paid 78.9% of the time and 18.3% are large.
 
 # %% [markdown]
 # ---
@@ -505,10 +598,45 @@ print(f'Silhouette with context features: {silhouette_score(context_sample, cont
 print(progression_table.to_string(index=False))
 
 # %%
-results_rq3 = {'chosen_k': CHOSEN_K, 'k_table': comparison.round(4).to_dict('records'), 'cluster_names': cluster_names,
+results_rq3 = {'chosen_k': CHOSEN_K, 'choice_reason': choice_reason, 'silhouette_gap_best_k': silhouette_gap_best_k,
+               'gap_rule_k': gap_rule_k, 'k_table': comparison.round(4).to_dict('records'), 'cluster_names': cluster_names,
                'seed_ARI': seed_ari, 'sample_ARI': sample_ari, 'association': association_table.to_dict('records'),
                'progression': progression_table.to_dict('records')}
 json.dump(results_rq3, open(TABLE_DIR / '05_rq3_results.json', 'w'), indent=2, default=float)
+
+# %% [markdown]
+# ---
+# ## The numbers behind the answer
+#
+# Read back from the saved tables (`tables/05_*`). The answer text below uses these numbers, rounded.
+
+# %%
+results_saved = json.load(open(TABLE_DIR / '05_rq3_results.json'))
+k_saved = pd.read_csv(TABLE_DIR / '05_rq3_k_selection.csv').set_index('k')
+outcomes_saved = pd.read_csv(TABLE_DIR / '05_rq3_cluster_outcomes.csv')
+association_saved = pd.read_csv(TABLE_DIR / '05_rq3_cluster_vs_outcome_association.csv')
+progression_saved = pd.read_csv(TABLE_DIR / '05_rq3_progression.csv')
+chosen = results_saved['chosen_k']
+rows = [('chosen k', chosen, '05_rq3_results.json'), ('reason', results_saved['choice_reason'], '05_rq3_results.json'),
+        ('k with largest silhouette gap over noise', results_saved['silhouette_gap_best_k'], '05_rq3_k_selection'),
+        ('k by Tibshirani gap rule', results_saved['gap_rule_k'], '05_rq3_k_selection')]
+for k in [2, 3, 4, 5, 6]:
+    r = k_saved.loc[k]
+    rows.append((f'k={k}: silhouette vs noise mean (SD), gap, z, beats all 20', f"{r['silhouette']:.3f} vs {r['noise_mean']:.3f} ({r['noise_std']:.3f}), "
+                 f"{r['real_minus_noise']:+.3f}, z={r['z_vs_noise']:.1f}, {bool(r['beats_all_20_noise'])}", '05_rq3_k_selection'))
+rows += [('seed ARI (5 other seeds)', ', '.join(f'{v:.2f}' for v in results_saved['seed_ARI']), '05_rq3_results.json'),
+         ('ARI between two samples', results_saved['sample_ARI'], '05_rq3_results.json')]
+for _, r in outcomes_saved.iterrows():
+    rows.append((f"{r['cluster_name'][:70]}", f"claims {int(r['claims']):,}, paid {r['building_paid_rate']:.3f}, large {r['large_loss_rate']:.3f}, "
+                 f"damage/value {r['median_damage_to_value']:.3f}", '05_rq3_cluster_outcomes'))
+for _, r in association_saved.iterrows():
+    rows.append((f"Cramer's V {r['grouping']} vs {r['outcome']}", r['cramers_V'], '05_rq3_cluster_vs_outcome_association'))
+for _, r in progression_saved.iterrows():
+    rows.append((f"Cramer's V {r['clustering']} vs {r['outcome']}", r['cramers_V'], '05_rq3_progression'))
+rows += [('autoencoder vs PCA reconstruction error (3 numbers)', f'{reconstruction_error:.3f} vs {pca_error:.3f}', 'this notebook'),
+         ('ARI latent-space clusters vs original', adjusted_rand_score(kmeans_final.labels_, latent_labels), 'this notebook'),
+         ('Ward vs k-means ARI', pd.DataFrame(linkage_rows).set_index('linkage').loc['ward', 'ARI_vs_kmeans'], 'this notebook')]
+answer_numbers = show_answer_numbers(rows, '05_rq3')
 
 # %% [markdown]
 # ---
@@ -516,24 +644,27 @@ json.dump(results_rq3, open(TABLE_DIR / '05_rq3_results.json', 'w'), indent=2, d
 #
 # > **RQ3. If we ignore the damage outcome, do the building and policy features form groups that mean something?**
 #
-# **The three questions from Lectures 08/10:**
+# **The three questions from Lectures 08/10** (numbers from the `answer_numbers` table above):
 #
 # | Question | Answer |
 # |---|---|
-# | Silhouette clearly better than random data of the same shape? | Yes. 0.178 vs 0.115 for k = 4; every k beats noise |
-# | Same structure with another seed and another sample? | **Only partly.** Seed ARI 0.91 / 0.52 / 1.00 / 0.52 / 0.52, sample ARI 0.61. k-means finds two competing 4-group solutions |
-# | Can we name the clusters? | Yes: post-FIRM newer homes (28%), older pre-FIRM homes (53%), multi-unit / commercial with high coverage (16%), V-zone coastal (4%) |
+# | Silhouette clearly better than random data of the same shape? | Yes for k >= 4. k = 4: 0.175 vs 0.119 +/- 0.017 over 20 shuffled datasets (max 0.149, z = 3.2). k = 2 and 3 do not beat every noise set |
+# | Which k do the criteria pick? | Largest silhouette gap: k = 2 (not robust to noise). Gap statistic rule: k = 7 (no clear elbow). Best silhouette: k = 6 (0.204). **We keep k = 4** as a design choice: it is real structure and easy to use, but not the statistical optimum |
+# | Same structure with another seed and another sample? | **Only partly.** Seed ARI 1.00 / 0.62 / 0.62 / 0.93 / 0.62, sample ARI 0.98. k-means finds two competing 4-group solutions |
+# | Can we name the clusters? | Yes: older pre-FIRM single-family homes (C1, 53%), newer post-FIRM single-family homes (C3, 28%), condo / multi-unit / commercial with high coverage (C2, 15%), V-zone coastal (C0, 4%) |
 #
 # **Answer: yes, there are real, nameable groups, but they describe *what is insured*, not *what will happen*.**
-# - The groups match known market segments, and their silhouette is clearly above the noise baseline. But the
-#   structure is weak (silhouette 0.18) and only partly stable across seeds. Hierarchical Ward linkage agrees only
-#   moderately (ARI 0.35), and DBSCAN finds no density-separated groups (the flags make "corners", not blobs).
-# - The autoencoder compresses the 14 features better than PCA (error 0.30 vs 0.55 with 3 numbers) but gives a
-#   different grouping (ARI 0.12). The structure depends on the representation.
-# - Checked against outcomes **afterwards**, the groups differ: large-loss rate 5.5% (post-FIRM) to 26.1%
+# - The groups match known market segments, and their silhouette is above every noise set for k >= 4. But the
+#   structure is weak (silhouette 0.17-0.20 for any k), the "right" k is not clear (2, 4, 6 or 7 depending on the
+#   rule), and k = 4 is only partly stable across seeds. Hierarchical Ward linkage agrees only moderately
+#   (ARI 0.32), and DBSCAN finds no density-separated groups (the flags make "corners", not blobs).
+# - The autoencoder compresses the 14 features better than PCA (error 0.29 vs 0.55 with 3 numbers) and its grouping
+#   agrees only partly with the original one (ARI 0.44). The structure depends on the representation.
+# - Checked against outcomes **afterwards**, the groups differ: large-loss rate 5.5% (newer post-FIRM homes) to 26.9%
 #   (multi-unit), damage-to-value 5% to 26%. Cramer's V with large loss is 0.20, better than flood zone (0.12) but
-#   not better than occupancy alone (0.23).
-# - The t-SNE maps show why the link is only moderate: rain and storm exposure are spread across all groups.
-#   Adding neighbourhood and coast context to the clustering raises Cramer's V with large loss from 0.198 to 0.237.
+#   not better than occupancy alone (0.22).
+# - The t-SNE maps show why the link is only moderate: rain and storm exposure are spread across all groups. The
+#   map layout is the same at perplexity 10, 40 and 100. Adding neighbourhood and coast context to the clustering
+#   raises Cramer's V with large loss from 0.204 to 0.251.
 # - **Use:** the clusters are a good way to *describe* the portfolio and the "older pre-FIRM home" risk, but not a
 #   prediction tool on their own.

@@ -51,6 +51,14 @@ FEATURE_SETS = {
     'C. NFIP + event + context (ACS, NRI)': (NFIP_NUMERIC_FEATURES + EVENT_FEATURES + CONTEXT_FEATURES, NFIP_CATEGORICAL_FEATURES),
 }
 
+# Feature blocks of the outside data, used for the ablation in notebooks 03 and 04
+# ("which outside source makes the gain?"). Together they are exactly EVENT_FEATURES.
+RAIN_FEATURES = ['rain_loss_day_mm', 'rain_3day_mm', 'rain_7day_mm', 'rain_max_daily_7day_mm']
+STORM_FEATURES = ['storm_distance_km', 'storm_wind_at_closest_kt', 'storm_lifetime_max_wind_kt', 'storm_category_at_closest',
+                  'storm_wind_proxy_at_claim_kt', 'no_storm_within_window', 'storm_within_200km']
+COAST_FEATURES = ['coast_distance_km']
+assert sorted(RAIN_FEATURES + STORM_FEATURES + COAST_FEATURES) == sorted(EVENT_FEATURES)
+
 LEAKING_COLUMNS = [
     'amountPaidOnBuildingClaim', 'netBuildingPaymentAmount', 'buildingDamageAmount', 'contentsDamageAmount',
     'amountPaidOnContentsClaim', 'netContentsPaymentAmount', 'amountPaidOnIncreasedCostOfComplianceClaim',
@@ -112,3 +120,66 @@ def lift_at_top(y_true, scores, top_share=0.10):
     order = np.argsort(-np.asarray(scores))
     n_top = max(1, int(len(order) * top_share))
     return y_true[order[:n_top]].mean() / y_true.mean()
+
+
+def event_block_bootstrap(data, truth_column, score_columns, metric_functions, baseline,
+                          group_column='event_group', n_repeats=500, seed=SEED):
+    """95% confidence interval for the GAIN of each model over a baseline model, resampling whole events.
+
+    Claims from one storm are not independent (one storm = thousands of similar claims), so we do not resample
+    single claims. We draw events with replacement (a block bootstrap), recompute every metric on the drawn
+    claims, and keep the difference "model - baseline". The 2.5th and 97.5th percentiles give the 95% CI.
+
+    data             : one row per claim (the test set)
+    truth_column     : the true label
+    score_columns    : {model name: column holding that model's score (or predicted label)}
+    metric_functions : {metric name: function(y_true, score) -> number}
+    baseline         : the model name we compare against (for example 'A. NFIP only')
+    Returns one row per (metric, model): point value, gain over the baseline, 95% CI of the gain,
+    and the share of repeats where the gain was above 0.
+    """
+    rng = np.random.default_rng(seed)
+    data = data.reset_index(drop=True)
+    rows_by_event = list(data.groupby(group_column).indices.values())
+    truth = data[truth_column].to_numpy()
+    scores = {name: data[column].to_numpy() for name, column in score_columns.items()}
+    point_values = {(metric, name): function(truth, scores[name])
+                    for metric, function in metric_functions.items() for name in scores}
+    gains = {key: [] for key in point_values if key[1] != baseline}
+    valid_repeats = 0
+    for _ in range(n_repeats):
+        chosen_events = rng.integers(0, len(rows_by_event), len(rows_by_event))
+        index = np.concatenate([rows_by_event[i] for i in chosen_events])
+        y_resampled = truth[index]
+        if len(np.unique(y_resampled)) < 2:
+            continue
+        valid_repeats += 1
+        for metric, function in metric_functions.items():
+            baseline_value = function(y_resampled, scores[baseline][index])
+            for name in scores:
+                if name != baseline:
+                    gains[(metric, name)].append(function(y_resampled, scores[name][index]) - baseline_value)
+    rows = []
+    for (metric, name), value in point_values.items():
+        row = {'metric': metric, 'model': name, 'value': value}
+        if name != baseline:
+            gain_draws = np.array(gains[(metric, name)])
+            row.update({'gain_vs_baseline': value - point_values[(metric, baseline)],
+                        'ci_95_low': np.quantile(gain_draws, 0.025), 'ci_95_high': np.quantile(gain_draws, 0.975),
+                        'share_of_repeats_with_gain_%': (gain_draws > 0).mean() * 100})
+        rows.append(row)
+    table = pd.DataFrame(rows)
+    table['events'] = len(rows_by_event)
+    table['valid_repeats'] = valid_repeats
+    return table
+
+
+def show_answer_numbers(rows, notebook_prefix):
+    """Print the key numbers of a notebook as one table and save them as tables/<prefix>_answer_numbers.csv.
+    rows: list of (quantity, value, source table). The Markdown answer below the table uses these numbers."""
+    table = pd.DataFrame(rows, columns=['quantity', 'value', 'source'])
+    table['value'] = [round(v, 4) if isinstance(v, (float, np.floating)) else v for v in table['value']]
+    table.to_csv(TABLE_DIR / f'{notebook_prefix}_answer_numbers.csv', index=False)
+    with pd.option_context('display.max_colwidth', 90, 'display.width', 220):
+        print(table.to_string(index=False))
+    return table

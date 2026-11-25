@@ -31,6 +31,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from mlxtend.frequent_patterns import apriori, fpgrowth, association_rules
+from scipy.stats import chi2
+from statsmodels.stats.multitest import multipletests
 
 sys.path.append('/Users/home/workspace/School/DataMining/nfip_claims')
 from nfip_project_utils import *
@@ -189,6 +191,40 @@ outcome_rules['chi_squared'] = [chi_squared_for_rule(row['support'], row['antece
 print(f'Rules with an outcome on the right: {len(outcome_rules):,}')
 
 # %% [markdown]
+# ## 3.2 Many rules, some lucky: multiple testing (Benjamini-Hochberg)
+#
+# We test hundreds of rules. Even if no rule were real, about 5% of them would look "significant" at p < 0.05 by
+# chance. The chi-squared value of each rule (1 degree of freedom for a 2x2 table) gives a p-value. Two corrections:
+#
+# - **Bonferroni:** a rule survives if p < 0.05 / (number of rules). Very strict.
+# - **Benjamini-Hochberg (BH):** controls the **false discovery rate**: among the rules we keep, at most 5% are expected
+#   to be false. Less strict, and the usual choice in rule mining.
+#
+# One more caution: the rules were first filtered by support and lift on the same data, so the p-values are a little
+# optimistic. The real test is Section 6 (new storms).
+
+# %%
+outcome_rules['p_value'] = chi2.sf(outcome_rules['chi_squared'], df=1)
+outcome_rules['BH_significant'] = multipletests(outcome_rules['p_value'], alpha=0.05, method='fdr_bh')[0]
+outcome_rules['Bonferroni_significant'] = outcome_rules['p_value'] < 0.05 / len(outcome_rules)
+multiple_testing_table = outcome_rules.groupby('outcome').agg(rules_tested=('rule', 'size'), p_below_005=('p_value', lambda p: (p < 0.05).sum()),
+                                                              BH_survivors=('BH_significant', 'sum'),
+                                                              Bonferroni_survivors=('Bonferroni_significant', 'sum')).reset_index()
+multiple_testing_table.loc[len(multiple_testing_table)] = ['all outcomes', len(outcome_rules), (outcome_rules['p_value'] < 0.05).sum(),
+                                                           outcome_rules['BH_significant'].sum(), outcome_rules['Bonferroni_significant'].sum()]
+multiple_testing_table.to_csv(TABLE_DIR / '06_rq4_multiple_testing.csv', index=False)
+print(multiple_testing_table.to_string(index=False))
+print('\nRules that do NOT survive BH, by outcome (lowest support first):')
+print(outcome_rules[~outcome_rules['BH_significant']].sort_values('support')[['rule', 'support', 'lift', 'chi_squared', 'p_value']].head(8).round(4).to_string(index=False))
+
+# %% [markdown]
+# **Reading the correction.** With 147,642 training claims, even a small lift gives a large chi-squared value, so
+# most rules survive both corrections. All 414 large-loss rules survive BH (413 survive Bonferroni). For unpaid claims
+# 185 of 210 survive BH and 156 Bonferroni; the 25 that fail have lift between 1.00 and 1.03, so they were never
+# interesting. So the correction removes little here; the bigger risk is not chance but **change over time**
+# (Section 6).
+
+# %% [markdown]
 # ## 3.1 Why confidence alone will fool you
 #
 # Sort the not-paid rules by confidence, then by lift, and compare.
@@ -290,10 +326,11 @@ print(holdout_table.to_string(index=False))
 # %% [markdown]
 # **Reading the hold-out.** Confidence changes between periods because 2024 had many more large losses (base rate
 # 16.1% vs 8.4%). **Lift** corrects for that, but the large-loss rules still **lose about half their lift** on the new
-# storms: the best rule falls from 5.4 to 2.1. Most rules stay clearly above 1 (1.7-2.8), so they still point to riskier
-# claims. One rule breaks completely: "category 3+ & condo/multi-unit & storm within 50 km" has lift 0.41 on 2024-2025.
-# Only 0.6% of test claims match it, and in 2024-2025 those condo claims close to a strong storm were mostly not large. The not-paid rules with little
-# rain become **stronger** (lift 2.8 to 3.7). Low rain is a stable sign of a weak claim.
+# storms: the best rule falls from 5.5 to 2.2. Ten of the top 12 stay clearly above 1 (1.6-2.5), so they still point
+# to riskier claims. Two rules break: both need "condo/multi-unit & storm within 50 km" and have lift 0.87 and 0.42 on
+# 2024-2025. Only 0.6% of test claims match them, and in 2024-2025 those condo claims close to a strong storm were
+# mostly not large. The not-paid rule with little rain becomes **stronger** (lift 2.8 to 3.7). Low rain is a stable
+# sign of a weak claim.
 
 # %% [markdown]
 # ---
@@ -322,24 +359,59 @@ json.dump(results_rq4, open(TABLE_DIR / '06_rq4_results.json', 'w'), indent=2, d
 
 # %% [markdown]
 # ---
+# ## The numbers behind the answer
+#
+# Read back from the saved tables (`tables/06_*`).
+
+# %%
+progression_saved = pd.read_csv(TABLE_DIR / '06_rq4_progression.csv')
+large_rules_saved = pd.read_csv(TABLE_DIR / '06_rq4_large_loss_rules.csv')
+holdout_saved = pd.read_csv(TABLE_DIR / '06_rq4_rules_on_test_years.csv')
+testing_saved = pd.read_csv(TABLE_DIR / '06_rq4_multiple_testing.csv').set_index('outcome')
+best_large = large_rules_saved.iloc[0]
+best_not_paid = not_paid_rules.sort_values('lift', ascending=False).iloc[0]
+holdout_large = holdout_saved[holdout_saved['rule'].str.endswith('OUT_large_loss')]
+holdout_not_paid = holdout_saved[holdout_saved['rule'].str.endswith('OUT_not_paid')]
+rows = [('training baskets / base rate large loss / not paid', f"{n_train:,} / {train_baskets['OUT_large_loss'].mean():.3f} / {train_baskets['OUT_not_paid'].mean():.3f}", 'this notebook'),
+        ('best large-loss rule', best_large['rule'], '06_rq4_large_loss_rules'),
+        ('  support / confidence / lift', f"{best_large['support']:.3f} / {best_large['confidence']:.3f} / {best_large['lift']:.2f}", '06_rq4_large_loss_rules'),
+        ('best not-paid rule', best_not_paid['rule'], 'this notebook'),
+        ('  support / confidence / lift', f"{best_not_paid['support']:.3f} / {best_not_paid['confidence']:.3f} / {best_not_paid['lift']:.2f}", 'this notebook')]
+for _, r in progression_saved.iterrows():
+    rows.append((f"{r['outcome']} {r['allowed items']}: rules, best lift, top-10 mean lift", f"{int(r['n_rules'])}, {r['best_lift']:.2f}, {r['mean_lift_top10']:.2f}", '06_rq4_progression'))
+for outcome in testing_saved.index:
+    r = testing_saved.loc[outcome]
+    rows.append((f'{outcome}: rules tested / BH survivors / Bonferroni survivors', f"{int(r['rules_tested'])} / {int(r['BH_survivors'])} / {int(r['Bonferroni_survivors'])}", '06_rq4_multiple_testing'))
+rows += [('test base rate large loss / not paid', f"{test_baskets['OUT_large_loss'].mean():.3f} / {test_baskets['OUT_not_paid'].mean():.3f}", 'this notebook'),
+         ('top-12 large-loss rules: test lift range (median)', f"{holdout_large['test_lift'].min():.2f}-{holdout_large['test_lift'].max():.2f} ({holdout_large['test_lift'].median():.2f})", '06_rq4_rules_on_test_years'),
+         ('top-12 large-loss rules with test lift < 1', int((holdout_large['test_lift'] < 1).sum()), '06_rq4_rules_on_test_years'),
+         ('best large-loss rule: train -> test lift', f"{holdout_large.iloc[0]['train_lift']:.2f} -> {holdout_large.iloc[0]['test_lift']:.2f}", '06_rq4_rules_on_test_years'),
+         ('top-6 not-paid rules: test lift range', f"{holdout_not_paid['test_lift'].min():.2f}-{holdout_not_paid['test_lift'].max():.2f}", '06_rq4_rules_on_test_years'),
+         ('frequent itemsets (Apriori = FP-Growth?)', f"{len(frequent_itemsets):,}", 'this notebook')]
+answer_numbers = show_answer_numbers(rows, '06_rq4')
+
+# %% [markdown]
+# ---
 # # Research Question -> Answer
 #
 # > **RQ4. Which combinations of building, policy and storm traits co-occur with large losses (and unpaid claims)
 # > much more often than chance, and do they hold on new storms?**
 #
-# **Answer.**
+# **Answer** (numbers from the `answer_numbers` table above).
 # - **Large losses.** The strongest rules combine **multi-unit / condo policies with high coverage** (at or above the
 #   $250k cap) and **storm intensity** (category 3+ at the closest approach). Best rule: category 3+ & condo/multi-unit &
-#   coverage at the cap -> large loss, support 1.8%, confidence 45%, **lift 5.4** (base rate 8.4%).
-# - **The external items add real information.** With NFIP items only, the best large-loss lift is 4.6 (top-10 mean 4.0).
-#   With storm and rain items it is 5.4 (mean 4.4). For unpaid claims the gain is larger: 1.8 -> 2.8.
-# - **Unpaid claims** go with the opposite pattern: **little rain (< 25 mm in 3 days)** and zone X or slab foundation.
+#   coverage at the cap -> large loss, support 1.7%, confidence 46%, **lift 5.5** (base rate 8.4%).
+# - **The external items add real information.** With NFIP items only, the best large-loss lift is 4.8 (top-10 mean 4.0).
+#   With storm and rain items it is 5.5 (mean 4.4). For unpaid claims the gain is larger: 1.8 -> 2.8.
+# - **Unpaid claims** go with the opposite pattern: **little rain (< 25 mm in 3 days)** and zone X.
 #   Best rule: confidence 54%, lift 2.8 (base rate 19.3%). These are often "not actual flood" or "below deductible" claims.
-# - **On new storms (2024-2025)** the large-loss rules keep a lift of about 1.7-2.8, half the training value, and one
-#   rule fails. The low-rain not-paid rules get stronger (lift 3.7). Rules are a good description, but they must be
-#   re-checked on each new event.
+# - **Not luck (multiple testing):** of 624 outcome rules, 599 survive Benjamini-Hochberg at 5% FDR and 569 survive
+#   Bonferroni. All 414 large-loss rules survive BH; the 25 unpaid rules that fail have lift of only 1.00-1.03.
+# - **On new storms (2024-2025)** the best large-loss rule falls from lift 5.5 to 2.2; the top-12 rules have a median
+#   test lift of 1.7, and two of them (condo & storm within 50 km) fall below 1. The low-rain not-paid rule gets
+#   stronger (lift 3.7). Rules are a good description, but they must be re-checked on each new event.
 # - **Measures (Lecture 12):** for one fixed outcome, confidence, lift and conviction give the same ranking
-#   (correlation 1.00), while leverage and chi-squared favour common rules. FP-Growth found the same 5,923 itemsets as
-#   Apriori about 10x faster.
-# - **Data quality:** rules between input items (e.g. CRS discount & condo & high coverage -> second home, confidence
-#   94%) flag 1,026 records (0.4%) that break the pattern and deserve a second look.
+#   (correlation 1.00), while leverage and chi-squared favour common rules. FP-Growth found the same 4,944 itemsets as
+#   Apriori on a 40k sample, at about the same speed (dense items).
+# - **Data quality:** rules between input items (e.g. category 3+ & condo & coverage at the cap -> second home,
+#   confidence 94%) flag 863 records (0.3%) that break the pattern and deserve a second look.

@@ -80,6 +80,119 @@ def download_if_missing(url, destination, min_size_bytes=1000, timeout=600):
 
 
 # %% [markdown]
+# ## 0.1 The data snapshot (frozen)
+#
+# OpenFEMA updates the claims file almost every week. A new download gives slightly different numbers (between two
+# downloads during this project the 2024-2025 test set grew from 105,137 to 105,482 claims). To make every result
+# reproducible, we **freeze** the input files: the cell below records the download date, size and SHA-256 fingerprint
+# of each raw file in `tables/00_data_snapshot.json`, plus the version of HURDAT2, NRI and ACS.
+#
+# - If the snapshot file does not exist yet, it is written now (from the files already on disk; nothing is downloaded).
+# - If it exists, the cell checks that the files on disk are still the same snapshot and prints a warning if one changed.
+#
+# **All results in this project use the snapshot printed below.**
+
+# %%
+import hashlib
+import pyarrow.parquet as pa_parquet
+
+SNAPSHOT_PATH = TABLE_DIR / '00_data_snapshot.json'
+
+
+def sha256_of_file(path, chunk_size=1 << 24):
+    """SHA-256 fingerprint of a file, read in 16 MB pieces (works for the 2.5 GB policies file)."""
+    digest = hashlib.sha256()
+    with open(path, 'rb') as file_handle:
+        for chunk in iter(lambda: file_handle.read(chunk_size), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def describe_file(path, version_note):
+    """Name, version, size, download time (file modification time) and SHA-256 of one raw file."""
+    path = Path(path)
+    info = {'file': str(path.relative_to(PROJECT_DIR)), 'version': version_note, 'present': path.exists()}
+    if path.exists():
+        stat = path.stat()
+        info.update({'size_bytes': stat.st_size, 'size_mb': round(stat.st_size / 1e6, 1),
+                     'downloaded_local_time': datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(timespec='seconds'),
+                     'sha256': sha256_of_file(path)})
+    return info
+
+
+def build_data_snapshot():
+    claims_file = RAW_DIR / 'NfipClaimsV3.parquet'
+    policies_file = RAW_DIR / 'policies' / 'NfipPoliciesV3.parquet'
+    snapshot = {'snapshot_written_local_time': datetime.datetime.now().isoformat(timespec='seconds'), 'files': []}
+    claims_info = describe_file(claims_file, 'OpenFEMA FIMA NFIP Redacted Claims v3, bulk parquet')
+    if claims_file.exists():
+        claims_info['rows'] = pa_parquet.ParquetFile(claims_file).metadata.num_rows
+        claims_info['data_as_of'] = str(pa_dataset.dataset(claims_file).to_table(columns=['asOfDate'])
+                                        .column('asOfDate').to_pandas().max())
+    snapshot['files'].append(claims_info)
+    policies_info = describe_file(policies_file, 'OpenFEMA FIMA NFIP Redacted Policies v3, bulk parquet (notebook 09)')
+    if policies_file.exists():
+        policies_info['rows'] = pa_parquet.ParquetFile(policies_file).metadata.num_rows
+    snapshot['files'].append(policies_info)
+    snapshot['files'].append(describe_file(RAW_DIR / 'nfip_fields.json', 'OpenFEMA data dictionary for NfipClaims v3'))
+    snapshot['files'].append(describe_file(RAW_DIR / 'hurdat' / 'hurdat2-1851-2025.txt',
+                                           'NOAA NHC HURDAT2 Atlantic 1851-2025, release file hurdat2-1851-2025-092326.txt'))
+    snapshot['files'].append(describe_file(RAW_DIR / 'nri' / 'NRI_Table_Counties.zip',
+                                           'FEMA National Risk Index v1.20 (December 2025), county table'))
+    for acs_file in sorted((RAW_DIR / 'census').glob('acsdt5y2023-*.dat')):
+        table_name = acs_file.stem.split('-')[1].upper()
+        snapshot['files'].append(describe_file(acs_file, f'Census ACS 2019-2023 5-year Summary File, table {table_name}'))
+    for other_file, note in [(RAW_DIR / 'census' / '2023_Gaz_tracts_national.zip', 'Census 2023 Gazetteer, tracts'),
+                             (RAW_DIR / 'census' / 'tab20_tract20_tract10_natl.txt', 'Census 2020-2010 tract relationship file'),
+                             (RAW_DIR / 'boundaries' / 'ne_10m_coastline.zip', 'Natural Earth 1:10m coastline'),
+                             (RAW_DIR / 'boundaries' / 'cb_2023_us_state_20m.zip', 'Census 2023 cartographic boundaries, states'),
+                             (RAW_DIR / 'boundaries' / 'cb_2023_us_county_20m.zip', 'Census 2023 cartographic boundaries, counties')]:
+        snapshot['files'].append(describe_file(other_file, note))
+    # PRISM has about 2,200 small daily files: we record their number, date range and one fingerprint of all names+sizes.
+    prism_files = sorted((RAW_DIR / 'prism').glob('*.zip'))
+    if prism_files:
+        listing = '\n'.join(f'{p.name}:{p.stat().st_size}' for p in prism_files).encode()
+        snapshot['prism_daily_grids'] = {'version': 'PRISM AN daily precipitation 4 km (provisional/stable as downloaded)',
+                                         'files': len(prism_files), 'first_file': prism_files[0].name,
+                                         'last_file': prism_files[-1].name,
+                                         'total_size_mb': round(sum(p.stat().st_size for p in prism_files) / 1e6, 1),
+                                         'sha256_of_names_and_sizes': hashlib.sha256(listing).hexdigest()}
+    return snapshot
+
+
+def print_data_snapshot(snapshot):
+    print(f"Data snapshot written {snapshot['snapshot_written_local_time']}")
+    file_table = pd.DataFrame(snapshot['files'])
+    columns = [c for c in ['file', 'version', 'size_mb', 'downloaded_local_time', 'rows', 'data_as_of', 'sha256'] if c in file_table]
+    file_table = file_table[columns].copy()
+    file_table['sha256'] = file_table['sha256'].str[:16] + '...'
+    if 'rows' in file_table:
+        file_table['rows'] = file_table['rows'].map(lambda v: f'{int(v):,}' if pd.notna(v) else '')
+    with pd.option_context('display.max_colwidth', 70, 'display.width', 250):
+        print(file_table.fillna('').to_string(index=False))
+    if 'prism_daily_grids' in snapshot:
+        print('PRISM:', snapshot['prism_daily_grids'])
+
+
+if SNAPSHOT_PATH.exists():
+    data_snapshot = json.load(open(SNAPSHOT_PATH))
+    print_data_snapshot(data_snapshot)
+    print('\nChecking that the claims and policies files on disk are still this snapshot ...')
+    for frozen in data_snapshot['files'][:2]:
+        path_on_disk = PROJECT_DIR / frozen['file']
+        if not frozen.get('present') or not path_on_disk.exists():
+            continue
+        same = sha256_of_file(path_on_disk) == frozen['sha256']
+        print(f"  {frozen['file']}: {'same file (SHA-256 matches)' if same else 'WARNING: the file changed since the snapshot!'}")
+elif (RAW_DIR / 'NfipClaimsV3.parquet').exists():
+    data_snapshot = build_data_snapshot()
+    json.dump(data_snapshot, open(SNAPSHOT_PATH, 'w'), indent=2)
+    print_data_snapshot(data_snapshot)
+    print(f'\nSnapshot saved to {SNAPSHOT_PATH}')
+else:
+    print('No raw files yet: the snapshot is written at the end of this notebook, after the downloads.')
+
+# %% [markdown]
 # ---
 # # Section 1: NFIP Redacted Claims (OpenFEMA)
 #
@@ -632,16 +745,28 @@ join_summary.to_csv(TABLE_DIR / '00_external_join_coverage.csv', index=False)
 print(f'Saved {merged_path.name}: {len(claims_conus):,} rows x {claims_conus.shape[1]} columns')
 print(join_summary.to_string(index=False))
 
+# %%
+# If the snapshot could not be written at the top (first run, files were downloaded above), write it now.
+if not SNAPSHOT_PATH.exists():
+    data_snapshot = build_data_snapshot()
+    json.dump(data_snapshot, open(SNAPSHOT_PATH, 'w'), indent=2)
+    print_data_snapshot(data_snapshot)
+else:
+    print(f'Data snapshot: {SNAPSHOT_PATH.name} (claims file as of {data_snapshot["files"][0].get("data_as_of")})')
+
 # %% [markdown]
 # ---
 # # Summary
 #
 # | Step | Rows |
 # |---|---|
-# | National NFIP v3 file (all years, as of 2026-09-08) | 2,725,989 |
-# | Loss date in 2020-2025 | 277,033 |
-# | Kept CONUS (PRISM coverage) | 276,064 |
-# | ...of which have a location (lat/lon) | 274,258 |
+# | National NFIP v3 file (all years, as of 2026-11-16) | 2,731,064 |
+# | Loss date in 2020-2025 | 277,088 |
+# | Kept CONUS (PRISM coverage) | 276,119 |
+# | ...of which have a location (lat/lon) | 274,312 |
+#
+# These counts belong to the frozen data version in `tables/00_data_snapshot.json` (Section 0.1). If OpenFEMA
+# republishes the file, the counts will change; compare the SHA-256 in the snapshot to know if you have the same data.
 #
 # **What we built.** One claim table with 7 kinds of information: building, policy, rain,
 # storm, coast distance, neighbourhood (ACS) and county risk (NRI).

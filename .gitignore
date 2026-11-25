@@ -1,9 +1,16 @@
+# data and generated outputs (large, rebuilt by the notebooks)
 data_raw/
 data_processed/
-tables/
+tables/*
+# ...but keep the frozen data snapshot in git, so the exact input files are recorded
+!tables/00_data_snapshot.json
+# environments and build clutter
 .venv/
+nfip_env/
 *.egg-info/
 __pycache__/
+logs_*.txt
+_sync/
 advice.md
-_sync
+advice_updates.md
 DSC411_Final_Presentation_Description.pdf

@@ -119,12 +119,12 @@ plt.show()
 # %% [markdown]
 # **Reading the raw numbers.**
 # - **Income.** Claims in the lowest-income quintile (block-group income below about $58k) were not paid 17.6% of the
-#   time, against 14.6% in the highest quintile. Their median payment was $34k against $41k.
-# - **Race.** Claims in majority non-White block groups were not paid 21.1% of the time, against 15.7%. Their median
+#   time, against 14.7% in the highest quintile. Their median payment was $34k against $41k.
+# - **Race.** Claims in majority non-White block groups were not paid 21.0% of the time, against 15.7%. Their median
 #   payment was $30k against $44k.
 # - **But the groups were not hit in the same way.** Majority non-White areas had much more rain (median 3-day rain
 #   176 mm vs 111 mm), fewer claims inside the SFHA (67% vs 85%) and lower damage ($22k vs $33k). The lowest
-#   income quintile has lower coverage ($220k vs $250k) and fewer SFHA claims. Lower payments partly follow lower
+#   income quintile has lower coverage ($200k vs $250k) and fewer SFHA claims. Lower payments partly follow lower
 #   damage and lower coverage. A raw gap mixes treatment with exposure, so we need controls.
 
 # %% [markdown]
@@ -140,7 +140,22 @@ plt.show()
 # | M1 | none (raw gap) |
 # | M2 | + building and policy: flood zone, occupancy, foundation, coverage, deductible, age, primary residence, RR2.0 |
 # | M3 | + flood exposure: PRISM rain, storm distance and wind, coast distance, **state and loss year** |
-# | M4 | + **adjuster damage** (log). Not allowed in a *prediction* model (it leaks), but in a *fairness* question it is the right control: we ask whether claims with the **same damage** are paid differently |
+# | M4 | + **adjuster damage** (log). **Sensitivity check only** (see below) |
+#
+# **Why M3 is the main result and M4 only a sensitivity check.** M4 asks "are claims with the *same damage* paid
+# differently?". That sounds like the right fairness question, but the adjuster's damage is a problem as a control:
+#
+# 1. **Payment is almost a formula of damage.** Payment = damage minus deductible, capped by coverage. A claim with
+#    damage below the deductible is "not paid" by definition. So controlling for damage removes much of the variation
+#    we want to explain.
+# 2. **Damage is measured after the flood, by the same claim process we are testing (a "bad control").** If damage
+#    is assessed or documented differently in lower-income neighbourhoods (for example, fewer receipts or a quicker
+#    inspection), then part of any unequal treatment is already *inside* the damage number. Controlling for it hides
+#    that part of the gap. In causal language, damage is a post-treatment variable (a mediator).
+#
+# M3 controls for everything known **before** the claim process (building, policy, flood exposure, state, year), so it
+# is our main estimate. M4 shows how much of the M3 gap is "explained" by the recorded damage; it is a lower bound,
+# not the answer.
 #
 # Standard errors are **clustered by county**, because claims in the same county share a storm and a local adjusting
 # team, so they are not independent.
@@ -278,27 +293,64 @@ json.dump(results_rq6, open(TABLE_DIR / '08_rq6_results.json', 'w'), indent=2, d
 
 # %% [markdown]
 # ---
+# ## The numbers behind the answer
+#
+# Read back from the saved tables (`tables/08_*`). M3 is the main result; M4 is the sensitivity check.
+
+# %%
+odds_saved = pd.read_csv(TABLE_DIR / '08_rq6_nonpayment_odds_ratios.csv')
+ratio_saved = pd.read_csv(TABLE_DIR / '08_rq6_payment_ratio_effects.csv')
+race_saved = pd.read_csv(TABLE_DIR / '08_rq6_race_effects.csv').set_index('model')
+raw_income_saved = pd.read_csv(TABLE_DIR / '08_rq6_raw_by_income.csv').set_index('income_quintile')
+raw_race_saved = pd.read_csv(TABLE_DIR / '08_rq6_raw_by_race.csv', index_col=0)
+rows = [('rows in the models', len(model_data), 'this notebook'),
+        ('raw not-paid rate Q1 lowest vs Q5 highest', f"{raw_income_saved.loc['Q1_lowest', 'not_paid_rate']:.3f} vs {raw_income_saved.loc['Q5_highest', 'not_paid_rate']:.3f}", '08_rq6_raw_by_income')]
+if 'not_paid_rate' in raw_race_saved.columns:
+    rows.append(('raw not-paid rate by majority race', ', '.join(f'{i}: {v:.3f}' for i, v in raw_race_saved['not_paid_rate'].items()), '08_rq6_raw_by_race'))
+for model_name in odds_saved['model'].unique():
+    q1 = odds_saved[(odds_saved['model'] == model_name) & (odds_saved['quintile'] == 'Q1_lowest')].iloc[0]
+    rows.append((f'Q1 vs Q5 odds ratio not paid, {model_name} [95% CI]', f"{q1['estimate']:.2f} [{q1['ci_low']:.2f}-{q1['ci_high']:.2f}], p = {q1['p_value']:.3f}", '08_rq6_nonpayment_odds_ratios'))
+for model_name in ratio_saved['model'].unique():
+    q1 = ratio_saved[(ratio_saved['model'] == model_name) & (ratio_saved['quintile'] == 'Q1_lowest')].iloc[0]
+    rows.append((f'Q1 vs Q5 payment/damage difference, {model_name}', f"{q1['estimate']:+.4f} [{q1['ci_low']:+.4f}, {q1['ci_high']:+.4f}], p = {q1['p_value']:.3f}", '08_rq6_payment_ratio_effects'))
+for model_name in race_saved.index:
+    r = race_saved.loc[model_name]
+    rows.append((f'non-White vs White, {model_name}: OR not paid (p); ratio diff (p)',
+                 f"{r['odds_ratio_not_paid (non-White vs White)']:.2f} ({r['OR_p_value']:.3f}); {r['payment_ratio_difference']:+.4f} ({r['ratio_p_value']:.4f})", '08_rq6_race_effects'))
+for model_name, share in decomposition['share_of_raw_gap_remaining_%'].items():
+    rows.append((f'share of raw log-odds gap remaining, {model_name} %', share, 'this notebook (decomposition)'))
+answer_numbers = show_answer_numbers(rows, '08_rq6')
+
+# %% [markdown]
+# ---
 # # Research Question -> Answer
 #
 # > **RQ6. Do claims in lower-income (and majority non-White) neighbourhoods have higher non-payment rates and lower
 # > payment-to-damage ratios, and does the gap remain after controls?**
 #
 # **Answer: a small gap in non-payment remains after the controls, but the evidence is weak, and it is about
-# neighbourhoods, not households.**
+# neighbourhoods, not households.** (Numbers from the `answer_numbers` table above; 232,820 claims in the models.)
 #
-# | Lowest vs highest income quintile | Raw (M1) | + building/policy (M2) | + flood exposure, state, year (M3) | + adjuster damage (M4) |
+# **M3 is the main result.** M3 controls for everything that existed *before* the adjuster arrived: building, policy,
+# flood exposure (rain, storm, coast), state and year. M4 adds the adjuster's damage estimate. That is a possible
+# **bad control** (a mediator): if claims in poorer areas were assessed differently, part of the gap would run *through*
+# the damage estimate, and controlling for it would hide that part. So M4 is only a sensitivity check.
+#
+# | Lowest vs highest income quintile | Raw (M1) | + building/policy (M2) | **+ flood exposure, state, year (M3, main)** | + adjuster damage (M4, sensitivity) |
 # |---|---|---|---|---|
-# | Odds ratio of not being paid [95% CI] | 1.36 [1.04-1.78] | 1.32 [1.06-1.63] | 1.28 [1.04-1.58] | 1.25 [1.01-1.56] |
-# | Payment/damage ratio difference | -0.027 | -0.022 | -0.023 | -0.014 (p = 0.06) |
+# | Odds ratio of not being paid [95% CI] | 1.35 [1.03-1.77] | 1.26 [1.04-1.53] | **1.24 [1.02-1.51], p = 0.033** | 1.22 [0.98-1.52], p = 0.072 |
+# | Payment/damage ratio difference [95% CI] | -0.027 [-0.055, -0.000] | -0.012 [-0.030, +0.006] | **-0.017 [-0.038, +0.003], p = 0.10** | -0.010 [-0.025, +0.005] |
+# | Share of the raw log-odds gap remaining | 100% | 78% | **71%** | 66% |
 #
 # - **Reproduction.** The raw comparison shows the kind of gap the published descriptive work reports: 17.6% vs
-#   14.6% not paid by income, and 21.1% vs 15.7% by race.
+#   14.7% not paid by income, and 21.0% vs 15.7% by race.
 # - **Extension: the gap is not explained by exposure.** My first expectation was that rain, storm and flood zone would
-#   explain most of the gap. They do not. After all controls, including the adjuster's damage estimate, about **73% of
-#   the raw log-odds gap remains** (OR 1.25). For race the odds ratio goes from 1.45 to 1.24 (p = 0.003).
-# - **The payment-to-damage gap is small.** Once damage is controlled, claims in the lowest quintile are paid about
-#   1.4 percentage points less per dollar of damage, and this is not significant at 5%. For race the difference is
-#   about 2 percentage points (p < 0.001).
+#   explain most of the gap. They do not. In the main model (M3) about **71% of the raw log-odds gap remains**
+#   (OR 1.24, CI 1.02-1.51). Adding the adjuster's damage (M4) lowers it only a little (OR 1.22), but the interval
+#   now touches 1 (0.98-1.52). For race the odds ratio goes from 1.44 (raw) to 1.28 in M3 (p = 0.03) and 1.22 in M4.
+# - **The payment-to-damage gap is small.** In M3, claims in the lowest quintile are paid about 1.7 percentage points
+#   less per dollar of damage (p = 0.10, not significant at 5%). For race the M3 difference is about 1.9 points
+#   (p = 0.06); only in M4 does it reach p < 0.01 (1.7 points).
 # - **Weak evidence.** Standard errors are clustered by county, so the confidence intervals are wide. The lower bound
 #   is close to 1.
 # - **What it does not show.** The cause is unknown. Possible reasons are documentation and filing behaviour (for
