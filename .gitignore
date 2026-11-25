@@ -3,3 +3,5 @@ data_processed/
 tables/
 .venv/
 *.egg-info/
+__pycache__/
+advice.md
