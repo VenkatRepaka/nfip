@@ -354,6 +354,7 @@ connected = np.array([len(weights.neighbors[i]) > 0 for i in range(len(county_ma
 county_map = county_map[connected].reset_index(drop=True)
 weights = Queen.from_dataframe(county_map, use_index=False, silence_warnings=True)
 weights.transform = 'r'
+np.random.seed(SEED)    # esda's global Moran permutation test uses NumPy's global random state (no seed argument)
 moran = Moran(county_map['large_loss_rate'].fillna(0).values, weights, permutations=499)
 print(f'Counties with >= 20 claims and at least one neighbour: {len(county_map)}')
 print(f"Moran's I for large-loss rate = {moran.I:.3f}  (expected under randomness {moran.EI:.3f}), permutation p = {moran.p_sim:.3f}")

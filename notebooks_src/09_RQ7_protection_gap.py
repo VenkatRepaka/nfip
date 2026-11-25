@@ -68,6 +68,69 @@ NON_CONUS_STATE_FIPS = ['02', '15', '60', '66', '69', '72', '78']
 
 # %% [markdown]
 # ---
+# ## 0.1 Files this notebook needs (downloaded here if missing)
+#
+# Notebook 00 downloads the NFIP claims, PRISM, HURDAT2, boundaries, NRI and seven ACS tables. Notebook 09 needs a few
+# **extra** files. They are downloaded below only if they are not already in `data_raw/`:
+#
+# | File | Size | Source |
+# |---|---|---|
+# | `census/2023_Gaz_tracts_national.zip` | 2.4 MB | Census 2023 Gazetteer (tract internal points, land area) |
+# | `census/tab20_tract20_tract10_natl.txt` | 19 MB | Census 2020-2010 tract relationship file |
+# | `census/acsdt5y2023-b25001.dat` | 18 MB | ACS 2019-2023 Summary File: housing units |
+# | `census/acsdt5y2023-b25034.dat` | 50 MB | ACS 2019-2023 Summary File: year structure built |
+# | `census/acsdt5y2023-{b25003,b19013,b25035,b01003}.dat` | | already downloaded by notebook 00 (re-checked here) |
+# | `policies/NfipPoliciesV3.parquet` | **about 2.5 GB** | OpenFEMA NFIP Redacted Policies v3. Large: the download can take 10-30 minutes. It is only needed the first time, because the result is cached in `data_processed/policies_in_force_by_tract.parquet` |
+#
+# Notebook 09 also uses files from notebook 00: `data_raw/prism/*.zip`, `data_raw/boundaries/ne_10m_coastline.zip`,
+# `data_raw/boundaries/cb_2023_us_state_20m.zip`, `data_raw/nri/NRI_Table_Counties.zip`,
+# `data_processed/hurdat2_tracks_2019_2025.parquet` and `data_processed/claims_merged_2020_2025.parquet`.
+
+# %%
+import requests
+from pathlib import Path
+
+
+def download_if_missing(url, destination, min_size_bytes=1000, timeout=600):
+    """Download a file only if we do not already have it (same helper as notebook 00). Returns the local path."""
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() and destination.stat().st_size >= min_size_bytes:
+        return destination
+    print(f'Downloading {url} ...')
+    with requests.get(url, stream=True, timeout=timeout) as response:
+        response.raise_for_status()
+        temporary_path = destination.with_suffix(destination.suffix + '.part')
+        with open(temporary_path, 'wb') as file_handle:
+            for chunk in response.iter_content(chunk_size=1 << 20):
+                file_handle.write(chunk)
+        temporary_path.rename(destination)
+    return destination
+
+
+CENSUS_DIR = RAW_DIR / 'census'
+ACS_BASE_URL = 'https://www2.census.gov/programs-surveys/acs/summary_file/2023/table-based-SF/data/5YRData/'
+EXTRA_FILES = {
+    CENSUS_DIR / '2023_Gaz_tracts_national.zip':
+        'https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2023_Gazetteer/2023_Gaz_tracts_national.zip',
+    CENSUS_DIR / 'tab20_tract20_tract10_natl.txt':
+        'https://www2.census.gov/geo/docs/maps-data/data/rel2020/tract/tab20_tract20_tract10_natl.txt',
+}
+for acs_table in ['b25001', 'b25003', 'b19013', 'b25034', 'b25035', 'b01003']:
+    EXTRA_FILES[CENSUS_DIR / f'acsdt5y2023-{acs_table}.dat'] = f'{ACS_BASE_URL}acsdt5y2023-{acs_table}.dat'
+for local_path, url in EXTRA_FILES.items():
+    download_if_missing(url, local_path, min_size_bytes=100_000)
+
+# The 2.5 GB policies file is only needed if the policies-in-force cache does not exist yet.
+POLICIES_URL = 'https://www.fema.gov/about/reports-and-data/openfema/v3/NfipPoliciesV3.parquet'
+if not (PROCESSED_DIR / 'policies_in_force_by_tract.parquet').exists():
+    download_if_missing(POLICIES_URL, RAW_DIR / 'policies' / 'NfipPoliciesV3.parquet', min_size_bytes=1_000_000_000, timeout=3600)
+for local_path in list(EXTRA_FILES) + [RAW_DIR / 'policies' / 'NfipPoliciesV3.parquet']:
+    size_text = f'{local_path.stat().st_size / 1e6:,.1f} MB' if local_path.exists() else 'not present (cache used)'
+    print(f'{str(local_path.relative_to(RAW_DIR)):<45} {size_text}')
+
+# %% [markdown]
+# ---
 # # Section 1: The Unit of Analysis: Census Tracts (Lecture 03, aggregation)
 #
 # **Why tracts?** Block groups are smaller, but most block groups have zero claims and very few policies, so rates would
@@ -253,8 +316,10 @@ nearest_coast = gpd.sjoin_nearest(tract_points, coastline[['geometry']], how='le
 tracts['coast_distance_km'] = nearest_coast.groupby(level=0)['coast_distance_m'].min().values / 1000
 
 # FEMA National Risk Index, county level
-nri = pd.read_csv(RAW_DIR / 'nri' / 'NRI_Table_Counties.csv', dtype={'STCOFIPS': str},
-                  usecols=['STCOFIPS', 'IFLD_RISKS', 'CFLD_RISKS', 'HRCN_RISKS'])
+# Read the CSV straight from the zip that notebook 00 downloaded (the CSV is not extracted on disk).
+with zipfile.ZipFile(RAW_DIR / 'nri' / 'NRI_Table_Counties.zip') as nri_archive:
+    nri = pd.read_csv(nri_archive.open('NRI_Table_Counties.csv'), dtype={'STCOFIPS': str},
+                      usecols=['STCOFIPS', 'IFLD_RISKS', 'CFLD_RISKS', 'HRCN_RISKS'])
 nri = nri.rename(columns={'STCOFIPS': 'county_geoid', 'IFLD_RISKS': 'nri_inland_flood_risk',
                           'CFLD_RISKS': 'nri_coastal_flood_risk', 'HRCN_RISKS': 'nri_hurricane_risk'})
 tracts = tracts.merge(nri, on='county_geoid', how='left')
@@ -683,6 +748,7 @@ projected = gpd.GeoSeries(gpd.points_from_xy(exposed['longitude'], exposed['lati
 coordinates_km = np.column_stack([projected.x / 1000, projected.y / 1000])
 neighbour_weights = KNN.from_array(coordinates_km, k=8)
 neighbour_weights.transform = 'r'
+np.random.seed(SEED)    # esda's global Moran permutation test uses NumPy's global random state (no seed argument)
 global_moran = Moran(exposed['gap_log_ratio'].values, neighbour_weights, permutations=199)
 print(f"Global Moran's I of the gap ratio = {global_moran.I:.3f} (expected {global_moran.EI:.4f}), permutation p = {global_moran.p_sim:.3f}")
 local_moran = Moran_Local(exposed['gap_log_ratio'].values, neighbour_weights, permutations=199, seed=SEED)

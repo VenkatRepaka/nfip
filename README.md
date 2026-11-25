@@ -27,8 +27,10 @@ nfip_env/bin/python -m ipykernel install --user --name nfip_env
 bash run_notebook.sh 00_data_acquisition_and_merging   # downloads raw data into data_raw/ (several GB, PRISM is the largest)
 bash run_chain.sh 01_EDA_and_cleaning 02_feature_reduction 03_RQ1_positive_building_payment 04_RQ2_large_loss_flag 05_RQ3_building_policy_clusters 06_RQ4_association_rules 07_RQ5_rain_vs_surge_and_hotspots 08_RQ6_equity_income_vs_payout 09_RQ7_protection_gap 99_summary
 ```
-Notebook 09 also needs `data_raw/policies/NfipPoliciesV3.parquet` (2.5 GB, https://www.fema.gov/about/reports-and-data/openfema/v3/NfipPoliciesV3.parquet)
-and the Census files listed in its Section 1-2; it caches its tract tables in `data_processed/`.
+Notebook 09 downloads the extra files it needs in its Section 0.1 (Census 2023 Gazetteer tracts, the 2020-2010 tract
+relationship file, ACS tables B25001 and B25034, and the 2.5 GB OpenFEMA NFIP Policies v3 parquet,
+https://www.fema.gov/about/reports-and-data/openfema/v3/NfipPoliciesV3.parquet). The policies file is only needed until
+`data_processed/policies_in_force_by_tract.parquet` exists.
 
 Notebook sources are in `notebooks_src/` (jupytext percent format). This package contains the **executed notebooks,
 tables and figures only**; `data_raw/` and `data_processed/` are not included (size). Run notebook 00 first to rebuild
