@@ -11,6 +11,5 @@ nfip_env/
 __pycache__/
 logs_*.txt
 _sync/
-advice.md
-advice_updates.md
+advice/
 DSC411_Final_Presentation_Description.pdf

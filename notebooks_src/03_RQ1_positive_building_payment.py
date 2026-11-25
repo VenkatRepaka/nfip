@@ -962,9 +962,8 @@ answer_numbers = show_answer_numbers(rows, '03_rq1')
 # > coast distance) improve the prediction of a claim closing without building payment, beyond building and policy
 # > facts alone? And which kinds of non-payment can be predicted?**
 #
-# **Answer: yes. Event data gives a clear gain, and the gain holds when whole storms are resampled and when Hurricane
-# Helene is removed. The model is a useful triage tool, not a payment decision.** (All numbers below come from the
-# `answer_numbers` table printed above.)
+# **Answer: yes for the refined question (event data gives a gain whose 95% CI is above 0); as a tool, it is useful for triage, not for payment decisions.** The gain holds when whole storms are resampled and when Hurricane Helene is removed. (All numbers below
+# come from the `answer_numbers` table printed above.)
 #
 # **H1 (event data helps): supported.** Closed 2024-2025 claims (103,530; 11.5% not paid), LightGBM:
 #

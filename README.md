@@ -97,7 +97,7 @@ Hawaii, Alaska and the territories are excluded because PRISM covers only the co
 | 00 data acquisition and merging | L03 aggregation, sampling | Build one table: NFIP + PRISM + HURDAT2 + coast + ACS + NRI |
 | 01 EDA and cleaning | L03 preprocessing, L13 outliers | What must be dropped, fixed, imputed? What would leak? |
 | 02 feature reduction | L04 PCA, filters, mutual information | Can we reduce the features, and which source carries information? |
-| 03 RQ1 positive building payment | L05 trees, naive Bayes; L06 k-NN; L07 logistic, SVM, evaluation; L14 MLP | Can building, policy and event data predict a positive payment? |
+| 03 RQ1 positive building payment | L05 trees, naive Bayes; L06 k-NN; L07 logistic, SVM, evaluation; L14 MLP | On closed claims, does event data improve the prediction of non-payment beyond NFIP facts, and which kinds of non-payment can be predicted? |
 | 04 RQ2 large-loss flag | L07 imbalance, thresholds, ROC/PR | Can we flag damage above the P90 line before inspection? |
 | 05 RQ3 clusters | L08 k-means, hierarchical; L09 DBSCAN; L10 validation; L16 autoencoder, t-SNE | Do building/policy features form meaningful groups? |
 | 06 RQ4 association rules | L11 Apriori, FP-Growth; L12 lift, leverage, conviction, chi-squared | Which trait combinations travel with large losses? |
@@ -109,7 +109,7 @@ Hawaii, Alaska and the territories are excluded because PRISM covers only the co
 
 ## RQ1: positive building payment (notebook 03)
 
-**Answer: partly, as a triage tool.** On closed 2024-2025 claims (103,530), NFIP-only LightGBM reaches ROC-AUC 0.737;
+**Answer: yes for the refined question (event data gives a gain whose 95% CI is above 0); as a tool, it is useful for triage, not for payment decisions.** On closed 2024-2025 claims (103,530), NFIP-only LightGBM reaches ROC-AUC 0.737;
 adding PRISM rain, storm and coast data raises it to 0.793 (gain +0.056, 95% event-bootstrap CI +0.024 to +0.129) and
 PR-AUC for "not paid" from 0.352 to 0.427. Without Helene (51.5% of test claims) the gain is larger (ROC 0.641 -> 0.730).
 The storm block and the rain block both matter (ablation: ROC -0.041 and -0.025 when removed); coast distance adds

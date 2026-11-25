@@ -387,7 +387,9 @@ rows += [('test base rate large loss / not paid', f"{test_baskets['OUT_large_los
          ('top-12 large-loss rules with test lift < 1', int((holdout_large['test_lift'] < 1).sum()), '06_rq4_rules_on_test_years'),
          ('best large-loss rule: train -> test lift', f"{holdout_large.iloc[0]['train_lift']:.2f} -> {holdout_large.iloc[0]['test_lift']:.2f}", '06_rq4_rules_on_test_years'),
          ('top-6 not-paid rules: test lift range', f"{holdout_not_paid['test_lift'].min():.2f}-{holdout_not_paid['test_lift'].max():.2f}", '06_rq4_rules_on_test_years'),
-         ('frequent itemsets (Apriori = FP-Growth?)', f"{len(frequent_itemsets):,}", 'this notebook')]
+         ('frequent itemsets, full training set (support >= 0.01)', f"{len(frequent_itemsets):,}", 'this notebook'),
+         ('frequent itemsets, 40k-sample comparison: Apriori / FP-Growth',
+          ' / '.join(f"{row['itemsets_found']:,}" for row in timing_rows), 'this notebook')]
 answer_numbers = show_answer_numbers(rows, '06_rq4')
 
 # %% [markdown]

@@ -655,7 +655,7 @@ answer_numbers = show_answer_numbers(rows, '05_rq3')
 #
 # **Answer: yes, there are real, nameable groups, but they describe *what is insured*, not *what will happen*.**
 # - The groups match known market segments, and their silhouette is above every noise set for k >= 4. But the
-#   structure is weak (silhouette 0.17-0.20 for any k), the "right" k is not clear (2, 4, 6 or 7 depending on the
+#   structure is weak (silhouette 0.17-0.25 for any k; 0.254 at k = 2), the "right" k is not clear (2, 4, 6 or 7 depending on the
 #   rule), and k = 4 is only partly stable across seeds. Hierarchical Ward linkage agrees only moderately
 #   (ARI 0.32), and DBSCAN finds no density-separated groups (the flags make "corners", not blobs).
 # - The autoencoder compresses the 14 features better than PCA (error 0.29 vs 0.55 with 3 numbers) and its grouping

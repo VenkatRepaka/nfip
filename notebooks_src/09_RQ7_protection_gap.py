@@ -775,7 +775,7 @@ print(lisa_profile.round(2).to_string())
 # **Reading the LISA map and profile.**
 # - The gap ratio is strongly clustered in space: **Moran's I = 0.45** (p = 0.005).
 # - **2,786 tracts (5.3 M housing units) are Low-Low protection-gap hotspots.** The hazard-only model expected about
-#   50,000 claims there; only about 1,700 were filed (0.33 per 1,000 units). Take-up in July 2020 was 7.5%, against 25.6%
+#   51,000 claims there; only about 1,750 were filed (0.33 per 1,000 units). Take-up in July 2020 was 7.5%, against 25.6%
 #   in the High-High tracts.
 # - The hotspots are mostly **inland heavy-rain areas, not the coast:** metro Atlanta, the Carolinas Piedmont, Arkansas
 #   / Oklahoma, Chicago, Connecticut, and parts of Florida, Texas and California (atmospheric rivers). They had storm rain
@@ -903,7 +903,7 @@ answer_numbers = show_answer_numbers(rows, '09_rq7')
 # 3. **Older housing files more claims** (pre-FIRM homes get damaged more often), not fewer.
 # 4. **Hazard explains about 40%** of the variation (tree model, county-grouped CV); neighbourhood features add about 1 point.
 # 5. **Where is the gap?** The observed/expected ratio is strongly clustered (Moran's I = 0.45). 2,786 Low-Low hotspot tracts
-#    (5.3 M units) filed about 1,700 claims where hazard predicted about 50,000; their take-up was 7.5%. They are mainly
+#    (5.3 M units) filed about 1,750 claims where hazard predicted about 51,000; their take-up was 7.5%. They are mainly
 #    **inland heavy-rain areas** (Atlanta, the Carolinas, Arkansas/Oklahoma, Chicago, Connecticut) and are not poorer than
 #    the High-High tracts.
 #
