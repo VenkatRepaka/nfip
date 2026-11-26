@@ -606,6 +606,100 @@ json.dump(results_rq3, open(TABLE_DIR / '05_rq3_results.json', 'w'), indent=2, d
 
 # %% [markdown]
 # ---
+# # Section 11: Column-drop experiment: do the clusters survive without some columns?
+#
+# k-means is sensitive to **which columns go in**. If one group of columns (for example the coverage amounts, which
+# have a wide spread) decides the clusters, the "groups" are only a picture of those columns. So we drop columns on
+# purpose (an **ablation**) and run k-means again at the chosen k = 4, on the same 20,000-claim sample and with the
+# same seed:
+#
+# | Version | Columns |
+# |---|---|
+# | (a) all features | the 14 columns of Section 1 (the main solution) |
+# | (b) without coverage amounts | drop building and contents coverage (12 columns) |
+# | (c) building only | building facts and where the building sits on the flood map (9 columns) |
+# | (d) policy only | coverage, deductible, policy tenure, primary residence (5 columns) |
+#
+# For each version we report the silhouette at k = 4, whether it beats **all 20** column-shuffled datasets (as in
+# Section 2.2), the k with the best silhouette between 2 and 10, and the **ARI** between its labels and the main k = 4
+# labels (1 = the same groups, 0 = chance). To see if the **named** clusters survive, we also check, for each main
+# cluster, which share of its claims end up together in one new cluster.
+
+# %%
+COVERAGE_COLUMNS = ['log_building_coverage', 'log_contents_coverage']
+BUILDING_COLUMNS = ['postFIRMConstructionIndicator', 'building_age_at_loss', 'number_of_floors', 'elevatedBuildingIndicator',
+                    'has_basement', 'is_single_family', 'log_number_of_units', 'in_special_flood_hazard_area', 'in_V_zone']
+POLICY_COLUMNS = ['log_building_coverage', 'log_contents_coverage', 'log_deductible', 'policy_tenure_years', 'primaryResidenceIndicator']
+column_drop_versions = {
+    '(a) all features': CLUSTER_FEATURES,
+    '(b) without coverage amounts': [column for column in CLUSTER_FEATURES if column not in COVERAGE_COLUMNS],
+    '(c) building only': BUILDING_COLUMNS,
+    '(d) policy only': POLICY_COLUMNS,
+}
+assert set(BUILDING_COLUMNS) | set(POLICY_COLUMNS) == set(CLUSTER_FEATURES)
+main_labels = kmeans_final.labels_
+column_drop_rows, cluster_match_rows = [], []
+for version_name, columns in column_drop_versions.items():
+    version_scaled = StandardScaler().fit_transform(cluster_sample[columns])
+    version_model = KMeans(n_clusters=CHOSEN_K, n_init=20, random_state=SEED).fit(version_scaled)
+    version_silhouette = silhouette_score(version_scaled, version_model.labels_, sample_size=8000, random_state=SEED)
+    # best k between 2 and 10 by silhouette (same settings as Section 2.1)
+    silhouette_by_k = {k: silhouette_score(version_scaled, KMeans(n_clusters=k, n_init=10, random_state=SEED).fit(version_scaled).labels_,
+                                           sample_size=8000, random_state=SEED) for k in range(2, 11)}
+    # 20 column-shuffled datasets at k = 4 (as in Section 2.2)
+    noise_rng = np.random.default_rng(SEED)
+    noise_silhouettes = []
+    for repeat in range(NOISE_REPEATS):
+        shuffled = version_scaled.copy()
+        for column_index in range(shuffled.shape[1]):
+            shuffled[:, column_index] = noise_rng.permutation(shuffled[:, column_index])
+        noise_model = KMeans(n_clusters=CHOSEN_K, n_init=10, random_state=SEED).fit(shuffled)
+        noise_silhouettes.append(silhouette_score(shuffled, noise_model.labels_, sample_size=8000, random_state=SEED))
+    noise_silhouettes = np.array(noise_silhouettes)
+    column_drop_rows.append({'version': version_name, 'n_columns': len(columns), 'silhouette_k4': version_silhouette,
+                             'noise_mean_k4': noise_silhouettes.mean(), 'noise_max_k4': noise_silhouettes.max(),
+                             'beats_all_20_noise': bool(version_silhouette > noise_silhouettes.max()),
+                             'best_k_by_silhouette': max(silhouette_by_k, key=silhouette_by_k.get),
+                             'best_silhouette_2_to_10': max(silhouette_by_k.values()),
+                             'ARI_vs_main_k4': adjusted_rand_score(main_labels, version_model.labels_)})
+    overlap = pd.crosstab(main_labels, version_model.labels_)
+    for main_cluster, counts in overlap.iterrows():
+        cluster_match_rows.append({'version': version_name, 'main_cluster': cluster_names[main_cluster],
+                                   'main_cluster_claims': int(counts.sum()),
+                                   'share_kept_together_%': 100 * counts.max() / counts.sum(),
+                                   'matching_new_cluster_purity_%': 100 * counts.max() / overlap[counts.idxmax()].sum()})
+column_drop_table = pd.DataFrame(column_drop_rows).round(4)
+cluster_match_table = pd.DataFrame(cluster_match_rows).round(1)
+column_drop_table.to_csv(TABLE_DIR / '05_rq3_column_drop.csv', index=False)
+cluster_match_table.to_csv(TABLE_DIR / '05_rq3_column_drop_cluster_match.csv', index=False)
+print(column_drop_table.to_string(index=False))
+print('\nDo the named clusters survive? Share of each main cluster kept together in one new cluster,')
+print('and how pure that new cluster is (share of it that comes from the main cluster):')
+print(cluster_match_table.pivot(index='main_cluster', columns='version', values='share_kept_together_%').to_string())
+print()
+print(cluster_match_table.pivot(index='main_cluster', columns='version', values='matching_new_cluster_purity_%').to_string())
+
+# %% [markdown]
+# **What this shows.**
+#
+# - **Without the two coverage amounts (12 columns) the clusters hardly change:** ARI 0.92 with the main k = 4 labels,
+#   and every named group stays together (96-100% of its claims in one new cluster). Silhouette 0.205 vs noise 0.141
+#   (max 0.166), so it still beats all 20 noise sets. Coverage is **not** what builds the groups.
+# - **Building columns alone (9 columns) give almost the same four groups:** ARI 0.84. V-zone, older and newer
+#   single-family homes survive (98-100% kept together). The condo / multi-unit group is the weak one: only 63% of it
+#   stays together, because part of what defines it is high coverage. Silhouette 0.294 beats the noise mean (0.223),
+#   but only just beats the best noise set (0.288), so the margin is thin.
+# - **Policy columns alone (5 columns) do not find the same groups:** ARI 0.16. The V-zone group disappears (40% kept
+#   together, purity 8%), and no group keeps more than 69% of its claims. Its silhouette (0.323) looks high, but noise
+#   data with only five columns also scores high (0.277 to 0.282), so the number is not comparable.
+# - With every feature set the highest raw silhouette is at k = 2 (all features) or k = 10 (building only, policy only),
+#   not at k = 4. This agrees with Section 2.1: k = 4 is a design choice, not the statistical optimum.
+#
+# In short, **the named clusters are building clusters.** Building facts carry the structure; policy facts add
+# mostly the condo / high-coverage detail.
+
+# %% [markdown]
+# ---
 # ## The numbers behind the answer
 #
 # Read back from the saved tables (`tables/05_*`). The answer text below uses these numbers, rounded.

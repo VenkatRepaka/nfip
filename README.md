@@ -26,6 +26,10 @@ download will give slightly different counts. Compare the hashes with the snapsh
 | `07_RQ5_rain_vs_surge_and_hotspots.ipynb` | Nelson-Mercer et al. reproduction, cause classifier with event-block bootstrap, KDE, DBSCAN hotspots, Moran's I (raw and empirical Bayes) / LISA. |
 | `08_RQ6_equity_income_vs_payout.ipynb` | Raw income/race gaps, then logistic and OLS with nested controls (clustered SE); M3 is the main model, M4 a sensitivity check. |
 | `09_RQ7_protection_gap.ipynb` | Tract-level protection gap: claims per 1,000 housing units in 17,476 exposed tracts; NFIP policies in force (take-up) vs claims per policy; negative binomial / Poisson count models, Poisson LightGBM, LISA gap hotspots, maps. |
+| `10_RQ8_underinsurance.ipynb` | Underinsurance: four shortfall measures (damage above coverage, out of pocket, contents, 80% rule), who is underinsured (logit, Tweedie GLM, quantile regression), linear vs LightGBM prediction on the time split with constant baselines. |
+| `11_RQ9_depth_damage.ipynb` | Depth-damage: depth cleaning (99 placeholder, feet vs inches, 12/24 heaping), duration check, Wing et al. (2020) bimodal reproduction, USACE EGM 01-03 / 04-01 curves, fractional logit vs beta vs Gamma vs LightGBM, P10/P50/P90 bands, elevated homes. |
+| `12_RQ10_crs_effect.ipynb` | Community Rating System: propensity-score matching and IPW (balance table, event/community bootstrap) vs fixed-effects regression, class-5 threshold test, within-community changes. |
+| `13_RQ11_anomalies.ipynb` | Anomalies: eight rule checks (depth heaping, 99, units, damage > value, payment checks), Isolation Forest vs LOF (global and within-event), validation against the rules, seed stability, agreement with notebook 01. |
 | `99_summary.ipynb` | All key results read from `tables/` (the `*_answer_numbers.csv` tables), key-results dot plot, dead ends, limitations, glossary, references. |
 
 Every RQ notebook prints an `answer_numbers` table (read from the saved tables and saved as
@@ -37,7 +41,7 @@ numbers.
 ```
 python -m venv .venv && .venv/bin/pip install -r requirements.txt
 bash run_notebook.sh 00_data_acquisition_and_merging   # downloads raw data into data_raw/ (several GB, PRISM is the largest)
-bash run_chain.sh 01_EDA_and_cleaning 02_feature_reduction 03_RQ1_positive_building_payment 04_RQ2_large_loss_flag 05_RQ3_building_policy_clusters 06_RQ4_association_rules 07_RQ5_rain_vs_surge_and_hotspots 08_RQ6_equity_income_vs_payout 09_RQ7_protection_gap 99_summary
+bash run_chain.sh 01_EDA_and_cleaning 02_feature_reduction 03_RQ1_positive_building_payment 04_RQ2_large_loss_flag 05_RQ3_building_policy_clusters 06_RQ4_association_rules 07_RQ5_rain_vs_surge_and_hotspots 08_RQ6_equity_income_vs_payout 09_RQ7_protection_gap 10_RQ8_underinsurance 11_RQ9_depth_damage 12_RQ10_crs_effect 13_RQ11_anomalies 99_summary
 ```
 `run_notebook.sh` converts the jupytext source in `notebooks_src/` to an `.ipynb` and executes it with the `.venv`
 kernel. Notebook 09 downloads the extra files it needs in its Section 0.1 (Census 2023 Gazetteer tracts, the 2020-2010
@@ -104,6 +108,10 @@ Hawaii, Alaska and the territories are excluded because PRISM covers only the co
 | 07 RQ5 rain vs surge, hotspots | L05 trees, L06 k-NN, L09 KDE and DBSCAN; spatial statistics | Is damage outside the SFHA rain-driven? Where are the hotspots? |
 | 08 RQ6 equity | L07 logistic regression and odds; L03 discretization | Are lower-income areas paid less, after controlling for the flood? |
 | 09 RQ7 protection gap | L03 aggregation; L05/07 tree regressor with grouped CV; L09-10 spatial clusters; count models; LISA | Do poorer, renter-heavy or older tracts file fewer claims per housing unit at the same hazard, and is it take-up? |
+| 10 RQ8 underinsurance | L03 aggregation, discretization; L07 logistic and regression models (Tweedie GLM, quantile regression), evaluation; L05 trees (LightGBM quantile / Tweedie) | How many flooded homes had damage above their coverage, how large was the gap, who was underinsured, and can pre-flood facts predict it? |
+| 11 RQ9 depth-damage | L03 cleaning (placeholders, units); L07 regression for a 0-1 target (fractional logit, beta, Gamma) and evaluation; L05 trees (LightGBM, quantile bands) | How does the damage ratio depend on water depth (and duration)? Is it bimodal (Wing et al. 2020)? How do USACE curves and learned models compare? |
+| 12 RQ10 CRS effect | L07 logistic regression (propensity), OLS with fixed effects; L06 nearest-neighbour matching; bootstrap | Do claims in better-CRS communities (class 1-5) have lower damage than comparable class-10 claims, and is there a class-5 threshold? |
+| 13 RQ11 anomalies | L13 outliers and anomaly detection (Isolation Forest, LOF); L11-12 rule checks; L10 stability (Jaccard) | Can Isolation Forest and LOF find suspicious or erroneous claims, and do they agree with explainable rule checks? |
 
 # Section 4: Key Results
 
@@ -173,6 +181,66 @@ policy (0.78). Income has no net effect after hazard and state controls (IRR 1.0
 (1.34) and fewer claims per policy (0.82) cancel; in the highest-hazard band the poorest tracts insured 14.7% of units vs
 44.9% in the richest. Older housing files more claims (1.28). The gap ratio is clustered (Moran's I = 0.45); 2,786 Low-Low
 hotspot tracts filed about 1,750 claims where hazard predicted about 51,000, with 7.5% take-up, mostly inland heavy-rain areas.
+
+## RQ8: underinsurance (notebook 10)
+
+**Answer.** 5.3% of flooded homes (10,050 of 188,562) had building damage above their coverage. The median gap was
+$11,273 (P90 $55,511), $265 million in total, or 2.4% of building damage (nominal dollars). Deductibles bring
+out-of-pocket costs to $781 million (7.0%), and uncovered contents add $639 million. Underinsurance is concentrated in
+Helene and Ian (8.0% of homes each) and in low coverage (22.6% at $100k or less). After hazard, state and year
+controls, lower income goes with more frequent shortfalls (OR 0.89 [0.80-0.98] per SD), renter share has no effect
+(0.96, n.s.), zone V doubles the odds (2.00 [1.51-2.65]), and primary residences have lower odds (0.67). On 2024-2025,
+the models rank homes at risk (ROC-AUC 0.76 GLM / 0.79 LightGBM), and LightGBM beats linear quantile regression for
+the P90 out-of-pocket share (pinball -0.0048 [-0.0066, -0.0008]). But no model beats a constant for the shortfall in
+dollars (test Tweedie deviance 293 constant / 539 GLM / 3,738 LightGBM), because the new storms shifted the level.
+
+## RQ9: depth-damage (notebook 11)
+
+**Answer.** The depth field needed cleaning first: 10,864 claims carry the 99 placeholder, and 80% of depths are in
+feet but 17% in inches (21% in 2022 and 2024). Flood duration is unusable (filled for 5.7% of claims). For one-story
+homes without a basement (47,531 claims), the median damage ratio rises only from 0.39 at 1 ft to 0.66 at 8 ft. 12-18%
+of claims sit below 10% damage at every depth, and the distribution becomes U-shaped from 5 ft, which reproduces Wing
+et al. (2020). The USACE generic curve fits badly (CoD -0.20; too low at 1 ft by 0.14, too high at 8 ft by 0.10). On
+2024-2025, LightGBM has MAE 0.154 against 0.212 for USACE (difference -0.058 [-0.075, -0.018]) and CoD 0.37. The
+fractional logit, Gamma and beta models reach CoD 0.29-0.31. The P10-P90 bands cover 72% instead of 80% of claims.
+Elevated homes have 0.62 [0.60-0.64] times the odds of the mean damage ratio at the same depth (an association, not a
+cause).
+
+## RQ10: Community Rating System (notebook 12)
+
+**Answer.** Raw class 1-5 claims have 2.6 times the median damage of class-10 claims ($62,642 vs $24,216), because
+95.5% of them are coastal Florida homes hit by major hurricanes. After matching within state-year (19 -> 5 of 21
+covariates with |SMD| > 0.1), the log-damage ATT is +0.045 [event CI -0.38, +0.23]. IPW gives -0.011 [-0.094, +0.133].
+Same-storm fixed effects give +0.024 for class 5 vs 10 [-0.142, +0.190]. The class-5 threshold test is not significant
+(class 5 - class 6 = +0.10, p = 0.26), and only 247 communities changed class. We find no measurable difference in
+damage per claim. CRS may still work through fewer claims or lower premiums, which this design cannot see.
+
+## RQ11: anomalies (notebook 13)
+
+**Answer.** 6.9% of the 207,336 scored claims break at least one rule. Most are depth problems: 8,100 with the 99
+placeholder, 2,745 in inches, 481 heaped at 12/24/36. Payment errors are almost absent (1 negative net payment, 4 paid
+above coverage). Isolation Forest and LOF do not find the depth errors (test ROC-AUC 0.47-0.53). They do find
+value-inconsistent claims: Isolation Forest test ROC-AUC 0.83 vs LOF 0.74 (difference -0.093 [-0.211, -0.056]), and
+the top-1% lift is about 12 for LOF and for the within-event Isolation Forest. The flags are unstable (seed Jaccard
+0.60). The two methods disagree (Jaccard 0.06), and the global Isolation Forest mostly flags rare large condo and
+non-residential buildings. Use the explainable rules first, and use the detectors only as a ranked list for human
+review.
+
+## Column-drop experiments
+
+Each experiment removes a group of columns and reruns the same model on the same time split (train 2020-2023,
+test 2024-2025). The main results above do not change.
+
+| Notebook / section | Experiment | Key numbers | What it means |
+|---|---|---|---|
+| 03, Section 16 | RQ1: drop one group at a time (closed claims, "not paid") | Full B: ROC 0.793 / PR-AUC 0.427. Without building: ROC -0.054; without policy: PR-AUC -0.063; without storm: ROC -0.042; without rain: ROC -0.025 (CI crosses 0); location -0.015, coast -0.005 | Every group helps; the claim's building and policy facts matter at least as much as the event data |
+| 03, Section 17 | Leak demo: + replacement cost (NOT a model to use) | ROC 0.793 -> 0.886, PR-AUC 0.427 -> 0.660; the missing flag alone gives 0.879 / 0.648 | The leak is large, so these columns stay out |
+| 04, Section 10 | RQ2: only facts known before the storm | ROC 0.792 / PR-AUC 0.368 / lift 2.36; without location PR-AUC 0.413; full model 0.823 / 0.468 / 3.02 (PR-AUC gain +0.100, CI +0.044 to +0.115) | A useful pre-storm ranking exists; event data clearly improves it after the storm |
+| 05, Section 11 | RQ3: k = 4 without some columns (ARI vs main clusters) | No coverage: ARI 0.92; building only: 0.84 (condo group 63% kept); policy only: 0.16. All beat 20 noise sets (building only by a thin margin) | The named clusters are building clusters |
+| 06, Section 8 | RQ4: rules without storm category / condo flag | Best lift 5.46 -> 4.83 (no storm category) and -> 3.91 (no condo flag); condo + capped coverage alone: lift 3.21 (test 1.95) | The condo flag is the key item; the storm category is a booster |
+| 02, Section 9 | Top 10 permutation features vs all 52 (LightGBM, large loss) | ROC 0.810 -> 0.788, PR-AUC 0.428 -> 0.393 | 10 columns keep about 92% of the PR-AUC |
+
+Details: `advice/column_drop_experiments.md`.
 
 # Section 5: What the External Data Changed (honest summary)
 

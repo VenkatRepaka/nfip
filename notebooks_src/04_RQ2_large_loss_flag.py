@@ -578,6 +578,63 @@ json.dump(results_rq2, open(TABLE_DIR / '04_rq2_results.json', 'w'), indent=2, d
 
 # %% [markdown]
 # ---
+# # Section 10: Column-drop experiment: a model that uses only what is known before the storm
+#
+# An insurer who wants to plan **before** a storm cannot use rain, storm or coast data from the event, and cannot use
+# the date of the loss. So we drop all of them and keep only **policy and building facts** (and, in one version, the
+# address). This is the version an insurer could really use ahead of time.
+#
+# | Version | Columns |
+# |---|---|
+# | known before the storm: policy + building + location | NFIP columns without the loss month and hurricane-season flag |
+# | known before the storm: policy + building only | the same, also without latitude, longitude and state (flood zone stays: it is a rating fact) |
+# | A. NFIP only (Section 5) | all NFIP columns, including loss month |
+# | C. full model (Section 5) | NFIP + event + context |
+#
+# Same LightGBM and time split as Section 5. The gains of the other versions over the "known before the storm"
+# model get a 95% event-block bootstrap interval (500 repeats, the helper `event_block_bootstrap`).
+
+# %%
+EVENT_TIMING_COLUMNS = ['loss_month', 'hurricane_season']
+LOCATION_COLUMNS = ['latitude', 'longitude']
+before_storm_numeric = [column for column in NFIP_NUMERIC_FEATURES if column not in EVENT_TIMING_COLUMNS]
+before_storm_no_location_numeric = [column for column in before_storm_numeric if column not in LOCATION_COLUMNS]
+before_storm_no_location_categorical = [column for column in NFIP_CATEGORICAL_FEATURES if column != 'state']
+check_no_leakage(before_storm_numeric + NFIP_CATEGORICAL_FEATURES)
+before_storm_model = fit_lightgbm(train_claims, before_storm_numeric, NFIP_CATEGORICAL_FEATURES)
+test_claims['score_before_storm'] = before_storm_model.predict_proba(
+    to_category_frame(test_claims, before_storm_numeric, NFIP_CATEGORICAL_FEATURES))[:, 1]
+no_location_model = fit_lightgbm(train_claims, before_storm_no_location_numeric, before_storm_no_location_categorical)
+test_claims['score_before_storm_no_location'] = no_location_model.predict_proba(
+    to_category_frame(test_claims, before_storm_no_location_numeric, before_storm_no_location_categorical))[:, 1]
+before_storm_table = event_block_bootstrap(
+    test_claims, TARGET,
+    {'known before the storm: policy + building + location': 'score_before_storm',
+     'known before the storm: policy + building only': 'score_before_storm_no_location',
+     'A. NFIP only (with loss month)': 'score_A', 'C. full model (NFIP + event + context)': 'score_C'},
+    large_loss_metric_functions, baseline='known before the storm: policy + building + location', n_repeats=500).round(4)
+before_storm_table.to_csv(TABLE_DIR / '04_rq2_known_before_storm.csv', index=False)
+print(f'Test claims: {len(test_claims):,}, large-loss rate {test_claims[TARGET].mean():.3f} (random PR-AUC)')
+print(before_storm_table.drop(columns=['events', 'valid_repeats']).to_string(index=False))
+
+# %% [markdown]
+# **What this shows.**
+#
+# - **A model that uses only facts known before the storm already ranks claims well:** ROC-AUC 0.792, PR-AUC 0.368
+#   and top-10% lift 2.36 (random PR-AUC = 0.170).
+# - **Removing the address (latitude, longitude, state) does not hurt; PR-AUC even rises** to 0.413 (lift 2.76).
+#   The 95% interval of that change crosses zero (-0.032 to +0.059), so we read it as "no loss": location learned on
+#   2020-2023 storms does not carry over to the 2024-2025 storms.
+# - **The loss month alone adds a little** (model A vs the pre-storm model: ROC +0.020, PR-AUC +0.043, both CIs just
+#   above 0).
+# - **The full model is clearly better than the pre-storm model:** ROC +0.031 (CI +0.018 to +0.048), PR-AUC +0.100
+#   (CI +0.044 to +0.115), top-10% lift 3.02 vs 2.36 (CI of the gain +0.16 to +0.94), better in 100% of repeats.
+#
+# In practice: **before the storm**, policy and building facts give a useful first ranking (about 2.4-2.8 times the
+# base rate in the top 10%). **After the storm**, adding rain, storm and context data improves it clearly.
+
+# %% [markdown]
+# ---
 # ## The numbers behind the answer
 #
 # Read back from the saved tables (`tables/04_*`). The answer text below uses these numbers, rounded.

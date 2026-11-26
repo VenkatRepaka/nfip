@@ -359,6 +359,66 @@ json.dump(results_rq4, open(TABLE_DIR / '06_rq4_results.json', 'w'), indent=2, d
 
 # %% [markdown]
 # ---
+# # Section 8: Column-drop experiment: rules without the storm category and without the condo flag
+#
+# The best large-loss rules combine **condo / multi-unit**, **coverage at the $250k cap** and a **category 3+ storm**.
+# Two questions: (a) without the storm-category item, do condo and capped coverage still give a high lift by themselves?
+# (b) without the condo flag, which rules were hiding behind it?
+#
+# Removing an item from every basket does not change the support of the itemsets that do not contain it. So "mining
+# again without the column" gives exactly the rules from Section 3 whose left side does not use that item; we take
+# them from `outcome_rules` (same supports, lifts and minimum support 1%). We also check the top rules on 2024-2025.
+
+# %%
+DROPPED_ITEM_VERSIONS = {'all items (Section 4)': None, '(a) without storm category (cat3plus_at_closest)': 'cat3plus_at_closest',
+                         '(b) without condo flag (condo_or_multiunit)': 'condo_or_multiunit'}
+column_drop_rows, top_rule_rows = [], []
+for version_name, dropped_item in DROPPED_ITEM_VERSIONS.items():
+    kept_rules = large_rules if dropped_item is None else large_rules[~large_rules['antecedents'].apply(lambda a: dropped_item in a)]
+    kept_rules = kept_rules.sort_values('lift', ascending=False)
+    best_rule = kept_rules.iloc[0]
+    column_drop_rows.append({'version': version_name, 'large_loss_rules': len(kept_rules), 'best_rule': best_rule['rule'],
+                             'best_lift': best_rule['lift'], 'best_confidence': best_rule['confidence'],
+                             'best_support': best_rule['support'], 'top10_mean_lift': kept_rules['lift'].head(10).mean(),
+                             'best_rule_test_lift': evaluate_rule_on(test_baskets, best_rule['antecedents'], 'OUT_large_loss')[2]})
+    for rank, (_, rule) in enumerate(kept_rules.head(5).iterrows(), start=1):
+        top_rule_rows.append({'version': version_name, 'rank': rank, 'rule': rule['rule'], 'support': rule['support'],
+                              'confidence': rule['confidence'], 'lift': rule['lift'],
+                              'test_lift': evaluate_rule_on(test_baskets, rule['antecedents'], 'OUT_large_loss')[2]})
+# The pair on its own: condo / multi-unit and coverage at the cap, without any storm item
+pair = ['condo_or_multiunit', 'coverage_at_250k_cap+']
+pair_train = evaluate_rule_on(train_baskets, pair, 'OUT_large_loss')
+pair_test = evaluate_rule_on(test_baskets, pair, 'OUT_large_loss')
+column_drop_rows.append({'version': 'condo & coverage at cap only (no storm item)', 'large_loss_rules': 1,
+                         'best_rule': 'condo_or_multiunit & coverage_at_250k_cap+  ->  OUT_large_loss', 'best_lift': pair_train[2],
+                         'best_confidence': pair_train[1], 'best_support': pair_train[0] * pair_train[1],
+                         'top10_mean_lift': np.nan, 'best_rule_test_lift': pair_test[2]})
+rules_column_drop_table = pd.DataFrame(column_drop_rows).round(3)
+top_rules_column_drop_table = pd.DataFrame(top_rule_rows).round(3)
+rules_column_drop_table.to_csv(TABLE_DIR / '06_rq4_column_drop.csv', index=False)
+top_rules_column_drop_table.to_csv(TABLE_DIR / '06_rq4_column_drop_top_rules.csv', index=False)
+print(f"Base rate of large loss: train {train_baskets['OUT_large_loss'].mean():.3f}, test {test_baskets['OUT_large_loss'].mean():.3f}")
+print(rules_column_drop_table.to_string(index=False))
+print()
+print(top_rules_column_drop_table.to_string(index=False))
+
+# %% [markdown]
+# **What this shows.**
+#
+# - **(a) Without the storm-category item the best large-loss lift falls only a little:** 5.46 -> 4.83
+#   (CRS discount & condo/multi-unit & coverage at the cap). 322 of the 414 large-loss rules remain, and the mean
+#   lift of the top 10 falls from 4.44 to 4.14. On 2024-2025 the new best rule keeps a lift of 1.92 (the original best
+#   rule: 2.16).
+# - **Condo + capped coverage still give lift on their own:** lift 3.21 in training (confidence 0.27, support 0.023)
+#   and 1.95 on 2024-2025. So the storm category makes the rule stronger, but it is not the reason the pair works.
+# - **(b) Without the condo flag the best lift falls more:** 5.46 -> 3.91 (coverage at the cap & second home & slab).
+#   The new top rules use second homes, coverage at the cap, high deductibles and older buildings, and they hold
+#   well on 2024-2025 (test lift 1.7-2.6).
+# - In short, **the condo flag is the most important single item**, and the storm category is a booster. Both
+#   findings in the RQ4 answer stay true.
+
+# %% [markdown]
+# ---
 # ## The numbers behind the answer
 #
 # Read back from the saved tables (`tables/06_*`).

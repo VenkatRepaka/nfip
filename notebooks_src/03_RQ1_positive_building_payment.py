@@ -875,6 +875,132 @@ json.dump(results_rq1, open(TABLE_DIR / '03_rq1_results.json', 'w'), indent=2, d
 
 # %% [markdown]
 # ---
+# # Section 16: Column-drop experiment: which group of columns does the refined RQ1 need?
+#
+# Section 11.2 removed one block of **outside** data at a time. Here we go one step further and also remove the
+# **NFIP** groups, one at a time, from the full set B (NFIP + event data). We use the refined setup of Section 15:
+# the same LightGBM trained on 2020-2023, scored on the **closed** 2024-2025 claims, and the target "not paid".
+#
+# | Group | Columns removed |
+# |---|---|
+# | policy | coverage amounts, contents cover, deductible, policy tenure, CRS class, policy count, primary residence, rental, Risk Rating 2.0, condo coverage type |
+# | building | elevation difference and certificate, building age, number of units, elevated, post-FIRM, floodproofed, occupancy, foundation, floors, basement, construction era |
+# | location and flood map | latitude, longitude, state, flood zone, inside the SFHA |
+# | rain (PRISM) | the four rain columns |
+# | storm (HURDAT2) | the seven storm columns |
+# | coast distance | coast distance |
+#
+# The loss month and hurricane-season flag stay in every version. For each version we report the change in ROC-AUC
+# and PR-AUC ("not paid") against full B, with a 95% event-block bootstrap interval (500 repeats, whole storms
+# resampled, the helper `event_block_bootstrap`).
+
+# %%
+POLICY_NUMERIC = ['log_building_coverage', 'log_contents_coverage', 'has_contents_coverage', 'building_deductible_usd',
+                  'policy_tenure_years', 'crsClassCode', 'policyCount', 'primaryResidenceIndicator', 'rentalPropertyIndicator',
+                  'rated_by_risk_rating_2']
+POLICY_CATEGORICAL = ['condominiumCoverageTypeCode']
+BUILDING_NUMERIC = ['elevationDifference', 'has_elevation_certificate_data', 'building_age_at_loss', 'construction_year_was_missing',
+                    'numberOfUnits', 'elevatedBuildingIndicator', 'postFIRMConstructionIndicator', 'floodproofedIndicator']
+BUILDING_CATEGORICAL = ['occupancy_group', 'foundation_group', 'floors_group', 'basement_group', 'construction_era']
+LOCATION_NUMERIC = ['latitude', 'longitude', 'in_special_flood_hazard_area']
+LOCATION_CATEGORICAL = ['flood_zone_group', 'state']
+TIMING_NUMERIC = ['loss_month', 'hurricane_season']
+assert sorted(POLICY_NUMERIC + BUILDING_NUMERIC + LOCATION_NUMERIC + TIMING_NUMERIC) == sorted(NFIP_NUMERIC_FEATURES)
+assert sorted(POLICY_CATEGORICAL + BUILDING_CATEGORICAL + LOCATION_CATEGORICAL) == sorted(NFIP_CATEGORICAL_FEATURES)
+
+full_numeric_B = NFIP_NUMERIC_FEATURES + EVENT_FEATURES
+group_drops = {
+    'without policy': (POLICY_NUMERIC, POLICY_CATEGORICAL),
+    'without building': (BUILDING_NUMERIC, BUILDING_CATEGORICAL),
+    'without location and flood map': (LOCATION_NUMERIC, LOCATION_CATEGORICAL),
+    'without rain (PRISM)': (RAIN_FEATURES, []),
+    'without storm (HURDAT2)': (STORM_FEATURES, []),
+    'without coast distance': (COAST_FEATURES, []),
+}
+closed_mask = (test_claims['reason_group'] != 'blank_reason').values
+column_drop_scores = {'full B': 'score_not_paid_B'}
+closed_drop_claims = closed_test_claims.copy()
+for version_name, (drop_numeric, drop_categorical) in group_drops.items():
+    numeric = [column for column in full_numeric_B if column not in drop_numeric]
+    categorical = [column for column in NFIP_CATEGORICAL_FEATURES if column not in drop_categorical]
+    model = fit_lightgbm(train_claims, numeric, categorical)
+    paid_scores = model.predict_proba(to_category_frame(test_claims, numeric, categorical))[:, 1]
+    score_column = 'score_not_paid_' + version_name.replace(' ', '_')
+    closed_drop_claims[score_column] = 1 - paid_scores[closed_mask]
+    column_drop_scores[version_name] = score_column
+not_paid_metric_functions = {'ROC_AUC': roc_auc_score, 'PR_AUC': average_precision_score}
+column_drop_table = event_block_bootstrap(closed_drop_claims, 'not_paid', column_drop_scores, not_paid_metric_functions,
+                                          baseline='full B', n_repeats=500).round(4)
+column_drop_table = column_drop_table.rename(columns={'gain_vs_baseline': 'change_vs_full_B'})
+column_drop_table.to_csv(TABLE_DIR / '03_rq1_column_drop.csv', index=False)
+print(f'Closed test claims: {len(closed_drop_claims):,}; not-paid rate {closed_drop_claims["not_paid"].mean():.3f}')
+print(column_drop_table.drop(columns=['events', 'valid_repeats']).to_string(index=False))
+
+# %% [markdown]
+# **What this shows.**
+#
+# - **Every group helps; none can be dropped for free.** All six changes are negative.
+# - **The NFIP groups matter as much as the event data.** Without the building columns ROC-AUC falls most
+#   (0.793 -> 0.739, -0.054, CI -0.090 to -0.006). Without the policy columns PR-AUC for "not paid" falls most
+#   (0.427 -> 0.364, -0.063, CI -0.099 to -0.025).
+# - **Storm data:** ROC -0.042 (CI -0.052 to -0.001), PR-AUC -0.030. **Rain data:** ROC -0.025 and PR-AUC -0.047, but
+#   its interval crosses zero (ROC CI -0.119 to +0.007) because the rain effect depends strongly on which storms are
+#   drawn (Helene).
+# - **Location and flood map** (-0.015 ROC) and **coast distance** (-0.005 ROC, PR-AUC CI crosses zero) add little.
+#
+# This agrees with Section 11.2 (storm and rain matter, coast adds little) and adds a new point: the building and
+# policy facts of the claim are at least as important as the outside data.
+
+# %% [markdown]
+# ---
+# # Section 17: Leakage demonstration: what the replacement cost would do (NOT a model to use)
+#
+# Notebook 01 (Section 9) found a **hidden leak**: `buildingReplacementCost` is filled in during the claim adjustment,
+# and it is missing mostly on **unpaid** claims. So "is the replacement cost missing?" partly tells the model the answer.
+# This section shows how big the effect is. **It is a demonstration of a mistake, not a model to use**: none of these
+# columns is used anywhere else in the project.
+#
+# Same LightGBM, same training years, scored on the closed 2024-2025 claims: full set B, B + replacement cost columns
+# (log value, coverage-to-replacement ratio, missing flag), and B + only the missing flag.
+
+# %%
+LEAK_COLUMNS = ['log_replacement_cost', 'coverage_to_replacement_ratio', 'replacement_cost_was_missing']
+leak_versions = {'B (clean, as used in the project)': full_numeric_B,
+                 'B + replacement cost columns (LEAK)': full_numeric_B + LEAK_COLUMNS,
+                 'B + only "replacement cost is missing" (LEAK)': full_numeric_B + ['replacement_cost_was_missing']}
+leak_rows = []
+for version_name, numeric in leak_versions.items():
+    if version_name.startswith('B (clean'):
+        not_paid_scores = closed_test_claims['score_not_paid_B'].values
+    else:
+        model = fit_lightgbm(train_claims, numeric, NFIP_CATEGORICAL_FEATURES)
+        not_paid_scores = 1 - model.predict_proba(to_category_frame(test_claims, numeric, NFIP_CATEGORICAL_FEATURES))[:, 1][closed_mask]
+    leak_rows.append({'version': version_name, 'ROC_AUC': roc_auc_score(closed_test_claims['not_paid'], not_paid_scores),
+                      'PR_AUC_not_paid': average_precision_score(closed_test_claims['not_paid'], not_paid_scores),
+                      'lift_top10%': lift_at_top(closed_test_claims['not_paid'].values, not_paid_scores, 0.10)})
+leak_table = pd.DataFrame(leak_rows)
+for metric in ['ROC_AUC', 'PR_AUC_not_paid', 'lift_top10%']:
+    leak_table[f'{metric}_change_vs_clean'] = leak_table[metric] - leak_table.loc[0, metric]
+leak_table = leak_table.round(4)
+leak_table.to_csv(TABLE_DIR / '03_rq1_leak_demo_replacement_cost.csv', index=False)
+missing_rate = test_claims.loc[closed_mask].groupby('not_paid')['replacement_cost_was_missing'].mean()
+print(f'Replacement cost missing: {missing_rate.get(0, np.nan) * 100:.1f}% of paid vs {missing_rate.get(1, np.nan) * 100:.1f}% of unpaid closed test claims')
+print(leak_table.to_string(index=False))
+
+# %% [markdown]
+# **What this shows.**
+#
+# - **The leak is large.** Replacement cost is missing for 52.5% of unpaid closed test claims but only 6.7% of paid
+#   ones. Adding the replacement-cost columns raises ROC-AUC from 0.793 to 0.886 (+0.093), PR-AUC for "not paid" from
+#   0.427 to 0.660 (+0.233) and top-10% lift from 3.90 to 5.63.
+# - **Almost all of the jump comes from the missing flag alone** (ROC 0.879, PR-AUC 0.648). The model does not learn
+#   anything about the building; it learns that the adjuster did not fill in the field, which happens after the claim
+#   is already decided.
+# - So these columns must stay out (as in every other model of the project). A score this good would be a warning
+#   sign, not a success.
+
+# %% [markdown]
+# ---
 # ## The numbers behind the answer
 #
 # The cell below reads the key numbers back from the saved tables (`tables/03_*.csv`). The answer text uses these

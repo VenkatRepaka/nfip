@@ -370,6 +370,58 @@ print(json.dumps(reduced_features, indent=2))
 
 # %% [markdown]
 # ---
+# # Section 9: Column-drop experiment: full feature set vs the top 10 permutation-importance features
+#
+# Section 6 ranked the features by permutation importance (LightGBM, large-loss target, fitted on 2020-2022 and
+# measured on the 2023 hold-out year, so the test years were never used). Here we ask the practical question: **if we
+# keep only the 10 most important features, how much do we lose?** Same LightGBM settings as Section 6, trained on
+# 2020-2023 and tested on 2024-2025 (the project's time split). If the score barely drops, the simpler model wins.
+
+# %%
+top10_features = permutation_table.head(10).index.tolist()
+top10_numeric = [column for column in top10_features if column in model_numeric]
+top10_categorical = [column for column in top10_features if column in model_categorical]
+print('Top 10 by permutation importance:', top10_features)
+
+
+def fit_and_score_large_loss(numeric, categorical):
+    model = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.05, num_leaves=31, subsample=0.8, subsample_freq=1,
+                               colsample_bytree=0.8, random_state=SEED, verbose=-1)
+    model.fit(to_category_frame(train_large, numeric, categorical), train_target)
+    scores = model.predict_proba(to_category_frame(test_large, numeric, categorical))[:, 1]
+    return {'ROC_AUC': roc_auc_score(test_target, scores), 'PR_AUC': average_precision_score(test_target, scores),
+            'lift_top10%': lift_at_top(test_target.values, scores, 0.10)}
+
+
+column_drop_rows = [
+    {'feature_set': f'full set after filters ({len(model_numeric)} numeric + {len(model_categorical)} categorical)',
+     'n_columns': len(model_numeric) + len(model_categorical), **fit_and_score_large_loss(model_numeric, model_categorical)},
+    {'feature_set': 'top 10 permutation-importance features', 'n_columns': 10,
+     **fit_and_score_large_loss(top10_numeric, top10_categorical)},
+]
+reduction_table = pd.DataFrame(column_drop_rows)
+for metric in ['ROC_AUC', 'PR_AUC', 'lift_top10%']:
+    reduction_table[f'{metric}_change_vs_full'] = reduction_table[metric] - reduction_table.loc[0, metric]
+reduction_table['features'] = ['all', ', '.join(top10_features)]
+reduction_table = reduction_table.round(4)
+reduction_table.to_csv(TABLE_DIR / '02_column_drop_top10.csv', index=False)
+print(f'Test positives: {test_target.mean() * 100:.1f}% (random PR-AUC)')
+print(reduction_table.drop(columns=['features']).to_string(index=False))
+
+# %% [markdown]
+# **What this shows.**
+#
+# - **The top 10 features keep most of the value.** LightGBM with all 52 columns: ROC-AUC 0.810, PR-AUC 0.428, top-10%
+#   lift 2.73. With only the top 10: ROC-AUC 0.788 (-0.022), PR-AUC 0.393 (-0.035), lift 2.50 (-0.23).
+# - So 10 columns give about 92% of the PR-AUC of 52 columns. The loss is small but real: the many weaker columns
+#   together still add something.
+# - The top 10 are mostly **NFIP building and policy facts** (coverage, occupancy, number of units, foundation,
+#   elevation difference, basement, building age, deductible), plus **3-day rain** and one ACS column (share of owner-
+#   occupied homes). This matches the column-drop results in notebooks 03 and 04.
+# - For a simple, explainable model the top 10 are a good choice; for the best ranking keep the full set.
+
+# %% [markdown]
+# ---
 # # Research Question (Notebook 02)
 #
 # > **Can the claim features be reduced to a few dimensions without losing predictive value, and which data
